@@ -1,0 +1,21 @@
+# Phase 1 - Core
+kiteconnect==4.2.0
+pandas==2.2.0
+python-dotenv==1.0.0
+
+# Phase 2 - Morning Beetle
+transformers==4.40.0
+torch==2.3.0
+feedparser==6.0.11
+thefuzz==0.22.1
+requests==2.31.0
+
+# Phase 3 - Engine
+sqlalchemy==2.0.0
+ta-lib==0.4.28
+pytest==8.0.0
+
+# Phase 4 - Cockpit
+streamlit==1.35.0
+python-telegram-bot==20.7
+psutil==5.9.8

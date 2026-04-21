@@ -1,0 +1,27 @@
+# Credentials - NEVER commit
+config/.env
+.env
+*.env
+
+# Data files
+data/
+*.db
+*.log
+watchlist.json
+instruments.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+*.code-workspace
