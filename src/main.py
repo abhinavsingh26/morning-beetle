@@ -1,1 +1,200 @@
 # Morning Beetle 
+import os
+import sys
+import json
+import logging
+import threading
+import time
+from datetime import datetime, time as dtime
+from dotenv import load_dotenv
+
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+load_dotenv("config/.env")
+
+# ── Core imports ─────────────────────────────────────────────────────
+from src.core.events      import MarketEvent, SignalEvent, OrderEvent, FillEvent
+from src.core.engine      import TradingEngine
+from src.core.trade_db    import TradeDB
+from src.core.data_handler import DataHandler
+from src.core.risk        import RiskManager
+from src.core.exit_manager import ExitManager
+from src.core.execution   import ExecutionHandler
+
+# ── Strategy imports ─────────────────────────────────────────────────
+from src.strategies.breakout     import MorningBreakout
+from src.strategies.rsi_momentum import RSIMomentum
+
+# ── Intelligence imports ──────────────────────────────────────────────
+from src.beetle.instrument_master import load_instruments
+from src.beetle.intelligence      import run_pipeline, save_watchlist
+
+# ── Logging setup ────────────────────────────────────────────────────
+logging.basicConfig(
+    level   = logging.INFO,
+    format  = "%(asctime)s [%(levelname)s] %(message)s",
+    handlers= [
+        logging.FileHandler("live_logs.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+IS_PAPER_TRADING = os.getenv("IS_PAPER_TRADING", "True") == "True"
+
+
+def load_watchlist() -> list:
+    """Load watchlist.json produced by Morning Beetle."""
+    try:
+        with open("watchlist.json") as f:
+            data = json.load(f)
+        tickers = data.get("tickers", [])
+        logger.info(f"Watchlist loaded: {[t['symbol'] for t in tickers]}")
+        return tickers
+    except Exception as e:
+        logger.error(f"Failed to load watchlist.json: {e}")
+        return []
+
+
+def run_morning_beetle() -> list:
+    """Run Morning Beetle pre-market pipeline."""
+    logger.info("Running Morning Beetle intelligence pipeline...")
+    try:
+        watchlist = run_pipeline()
+        save_watchlist(watchlist)
+        return watchlist
+    except Exception as e:
+        logger.error(f"Morning Beetle pipeline failed: {e}")
+        return []
+
+
+def main():
+    logger.info("=" * 60)
+    logger.info("  MORNING BEETLE ENGINE — STARTING")
+    logger.info(f"  Mode: {'PAPER TRADING' if IS_PAPER_TRADING else '⚠️  LIVE TRADING'}")
+    logger.info(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 60)
+
+    # ── Step 1: Run Morning Beetle (or load existing watchlist) ───────
+    now = datetime.now().time()
+    if now < dtime(9, 14):
+        logger.info("Pre-market window — running Morning Beetle...")
+        watchlist = run_morning_beetle()
+    else:
+        logger.info("Loading existing watchlist.json...")
+        watchlist = load_watchlist()
+
+    if not watchlist:
+        logger.error("Empty watchlist — engine cannot start. Run auth_test.py first.")
+        return
+
+    symbols = [t["symbol"] for t in watchlist]
+    sentiment_map = {t["symbol"]: t.get("sentiment_score", 0.0)
+                     for t in watchlist}
+
+    # ── Step 2: Initialise core modules ──────────────────────────────
+    engine    = TradingEngine(timeout=3.0, is_paper_trading=IS_PAPER_TRADING)
+    db        = TradeDB(db_path="trades.db")
+    risk      = RiskManager(engine=engine, trade_db=db)
+    exits     = ExitManager(engine=engine, trade_db=db)
+    execution = ExecutionHandler(engine=engine, trade_db=db,
+                                 is_paper_trading=IS_PAPER_TRADING)
+
+    db.log_system("INFO", "ENGINE_START",
+                  f"Symbols: {symbols} | Paper: {IS_PAPER_TRADING}")
+
+    # ── Step 3: Load instruments + set up DataHandler ─────────────────
+    instruments = load_instruments()
+    data_handler = DataHandler(engine=engine, instrument_map=instruments)
+    data_handler.subscribe(symbols)
+
+    # ── Step 4: Initialise strategies for each symbol ─────────────────
+    strategies = {}
+    for symbol in symbols:
+        sentiment = sentiment_map.get(symbol, 0.0)
+        strategies[symbol] = {
+            "breakout": MorningBreakout(engine, symbol, sentiment),
+            "rsi":      RSIMomentum(engine, symbol, sentiment)
+        }
+        logger.info(f"  Strategies initialised for {symbol} "
+                   f"(sentiment={sentiment:+.3f})")
+
+    # ── Step 5: Register EventBus handlers ───────────────────────────
+    def on_market_event(event: MarketEvent):
+        """Route ticks to strategies and exit manager."""
+        symbol = event.symbol
+        if symbol in strategies:
+            strategies[symbol]["breakout"].on_tick(event)
+            strategies[symbol]["rsi"].on_tick(event)
+        exits.on_tick(event)
+
+    def on_fill_event(event: FillEvent):
+        """Register new position with ExitManager."""
+        exits.add_position(
+            trade_id    = event.trade_id,
+            symbol      = event.symbol,
+            direction   = event.direction,
+            entry_price = event.fill_price,
+            quantity    = event.quantity
+        )
+        logger.info(f"  Position registered with ExitManager: "
+                   f"{event.direction} {event.symbol} @ {event.fill_price}")
+
+    engine.register_handler("MARKET", on_market_event)
+    engine.register_handler("SIGNAL", risk.on_signal)
+    engine.register_handler("ORDER",  execution.on_order)
+    engine.register_handler("FILL",   on_fill_event)
+
+    # ── Step 6: Start EventBus ────────────────────────────────────────
+    engine.run_in_thread()
+
+    # ── Step 7: Start WebSocket ───────────────────────────────────────
+    data_handler.start()
+    logger.info("WebSocket streaming started.")
+    logger.info(f"Watching: {symbols}")
+    logger.info("Engine running. Press Ctrl+C to stop.\n")
+
+    # ── Step 8: Main loop — runs until kill switch or Ctrl+C ──────────
+    try:
+        while True:
+            now = datetime.now().time()
+
+            # Kill switch check — 15:15
+            if now >= dtime(15, 15):
+                logger.info("⚡ 15:15 Kill switch — stopping engine.")
+                db.log_system("INFO", "ENGINE_STOP", "15:15 kill switch")
+                break
+
+            # Status heartbeat every 5 minutes
+            if now.second == 0 and now.minute % 5 == 0:
+                open_pos = exits.get_open_positions()
+                daily_pnl = db.get_daily_pnl()
+                logger.info(f"  ❤️  Heartbeat | Open: {list(open_pos.keys())} "
+                           f"| Daily P&L: ₹{daily_pnl:.2f}")
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        logger.info("\nCtrl+C received — shutting down.")
+
+    finally:
+        # ── Shutdown ─────────────────────────────────────────────────
+        data_handler.stop()
+        engine.stop()
+
+        # Final P&L
+        daily_pnl = db.get_daily_pnl()
+        open_pos  = exits.get_open_positions()
+
+        logger.info("\n" + "=" * 60)
+        logger.info("  ENGINE SHUTDOWN")
+        logger.info(f"  Daily P&L    : ₹{daily_pnl:.2f}")
+        logger.info(f"  Open positions: {list(open_pos.keys())}")
+        logger.info("=" * 60)
+
+        db.log_system("INFO", "ENGINE_STOP",
+                      f"Daily P&L: ₹{daily_pnl:.2f}")
+
+
+if __name__ == "__main__":
+    main()
