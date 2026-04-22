@@ -8,8 +8,6 @@ logger = logging.getLogger(__name__)
 
 # News sources — NSE primary, Google News secondary
 FEEDS = {
-    "nse_announcements": "https://www.nseindia.com/companies-listing/corporate-filings-announcements",
-    "nse_rss":           "https://feeds.feedburner.com/nseindia",
     "google_business":   "https://news.google.com/rss/search?q=NSE+India+stock+market&hl=en-IN&gl=IN&ceid=IN:en",
     "google_earnings":   "https://news.google.com/rss/search?q=India+quarterly+results+earnings&hl=en-IN&gl=IN&ceid=IN:en",
     "google_corporate":  "https://news.google.com/rss/search?q=India+stock+dividend+acquisition+order+win&hl=en-IN&gl=IN&ceid=IN:en",
@@ -23,6 +21,9 @@ def fetch_feed(url: str, source_name: str) -> list:
     """Fetch a single RSS feed. Returns list of headline dicts."""
     headlines = []
     try:
+        feed = feedparser.parse(url, agent="Mozilla/5.0", request_headers={"Connection": "close"})
+        import socket
+        socket.setdefaulttimeout(10)
         feed = feedparser.parse(url)
         for entry in feed.entries:
             title = entry.get("title", "").strip()
