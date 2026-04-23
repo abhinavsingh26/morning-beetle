@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 DAILY_LOSS_LIMIT  = -2000.0   # ₹2,000 max daily loss
 ENTRY_CUTOFF      = time(10, 30)   # No new positions after 10:30 AM
 COOLDOWN_SECONDS  = 1.0            # Min 1s between consecutive orders
-MAX_POSITION_SIZE = 100            # Default quantity per trade
+#MAX_POSITION_SIZE = 100
+MAX_POSITION_VALUE = 50000   # Max ₹50,000 per trade            # Default quantity per trade
 
 # Sentiment gate thresholds per Blueprint
 SENTIMENT_BLOCK_BULL = 0.4    # Block SELL if FinBERT > +0.4
@@ -97,9 +98,16 @@ class RiskManager:
             return False, f"Sentiment gate: BUY blocked — FinBERT strongly BEARISH ({score:+.2f})"
         return True, ""
 
-    def _calculate_quantity(self, symbol: str, ltp: float) -> int:
+    '''def _calculate_quantity(self, symbol: str, ltp: float) -> int:
         """Simple fixed quantity for now. Phase 5 will add position sizing."""
-        return MAX_POSITION_SIZE
+        return MAX_POSITION_SIZE'''
+    
+    def _calculate_quantity(self, symbol: str, ltp: float) -> int:
+        """Position size capped at ₹50,000 per trade."""
+        if ltp <= 0:
+            return 1
+        qty = int(MAX_POSITION_VALUE / ltp)
+        return max(1, qty)
 
     def validate(self, signal: SignalEvent) -> tuple[bool, str]:
         """
