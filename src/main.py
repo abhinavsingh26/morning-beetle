@@ -21,6 +21,9 @@ from src.core.risk        import RiskManager
 from src.core.exit_manager import ExitManager
 from src.core.execution   import ExecutionHandler
 
+# ── Telegram Notification ─────────────────────────────────────────────────
+from src.notifications.telegram_bot import TelegramNotifier
+
 # ── Strategy imports ─────────────────────────────────────────────────
 from src.strategies.breakout     import MorningBreakout
 from src.strategies.rsi_momentum import RSIMomentum
@@ -75,11 +78,20 @@ def main():
     logger.info(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
+    # ── Telegram notifier ─────────────────────────────────────────────
+    try:
+        notifier = TelegramNotifier()
+    except Exception as e:
+        logger.warning(f"Telegram not available: {e}")
+        notifier = None
+
     # ── Step 1: Run Morning Beetle (or load existing watchlist) ───────
     now = datetime.now().time()
     if now < dtime(9, 14):
         logger.info("Pre-market window — running Morning Beetle...")
         watchlist = run_morning_beetle()
+        if notifier and watchlist:
+            notifier.send_premarket_report(watchlist, is_paper=IS_PAPER_TRADING)
     else:
         logger.info("Loading existing watchlist.json...")
         watchlist = load_watchlist()
@@ -99,6 +111,7 @@ def main():
     exits     = ExitManager(engine=engine, trade_db=db)
     execution = ExecutionHandler(engine=engine, trade_db=db,
                                  is_paper_trading=IS_PAPER_TRADING)
+    
 
     db.log_system("INFO", "ENGINE_START",
                   f"Symbols: {symbols} | Paper: {IS_PAPER_TRADING}")
@@ -139,6 +152,19 @@ def main():
         )
         logger.info(f"  Position registered with ExitManager: "
                    f"{event.direction} {event.symbol} @ {event.fill_price}")
+        
+        # Telegram trade alert
+        if notifier:
+            notifier.send_trade_alert(
+                direction  = event.direction,
+                symbol     = event.symbol,
+                price      = event.fill_price,
+                quantity   = event.quantity,
+                strategy   = "Engine",
+                sentiment  = 0.0,
+                sector     = "—",
+                is_paper   = IS_PAPER_TRADING
+            )
 
     engine.register_handler("MARKET", on_market_event)
     engine.register_handler("SIGNAL", risk.on_signal)
@@ -159,8 +185,8 @@ def main():
         while True:
             now = datetime.now().time()
 
-            # Kill switch check — 15:15
-            if now >= dtime(15, 15):
+            # Kill switch check — 15:15 (only during market hours)
+            if dtime(15, 15) <= now <= dtime(15, 30):
                 logger.info("⚡ 15:15 Kill switch — stopping engine.")
                 db.log_system("INFO", "ENGINE_STOP", "15:15 kill switch")
                 break
@@ -173,6 +199,22 @@ def main():
                            f"| Daily P&L: ₹{daily_pnl:.2f}")
 
             time.sleep(1)
+
+            # EOD Summary at 15:30
+            if now.hour == 15 and now.minute == 30 and now.second < 2:
+                if notifier:
+                    from sqlalchemy.orm import Session
+                    from src.core.trade_db import Trade
+                    with Session(db.engine) as session:
+                        today_trades = session.query(Trade).filter(
+                            Trade.entry_time >= datetime.now().replace(
+                                hour=0, minute=0, second=0)
+                        ).all()
+                    notifier.send_eod_summary(
+                        today_trades,
+                        db.get_daily_pnl(),
+                        is_paper=IS_PAPER_TRADING
+                    )
 
     except KeyboardInterrupt:
         logger.info("\nCtrl+C received — shutting down.")
