@@ -21,21 +21,38 @@ def fetch_feed(url: str, source_name: str) -> list:
     """Fetch a single RSS feed. Returns list of headline dicts."""
     headlines = []
     try:
-        feed = feedparser.parse(url, agent="Mozilla/5.0", request_headers={"Connection": "close"})
-        import socket
-        socket.setdefaulttimeout(10)
         feed = feedparser.parse(url)
+        now  = datetime.now(timezone.utc)
+
         for entry in feed.entries:
             title = entry.get("title", "").strip()
             if not title or len(title) < 10:
                 continue
-            published = entry.get("published", "")
+
+            # Parse published date
+            published_parsed = entry.get("published_parsed")
+            published_str    = entry.get("published", "")
+
+            if published_parsed:
+                import calendar
+                pub_timestamp = calendar.timegm(published_parsed)
+                pub_dt = datetime.fromtimestamp(pub_timestamp,
+                                                tz=timezone.utc)
+                age_hours = (now - pub_dt).total_seconds() / 3600
+
+                # Skip headlines older than 48 hours
+                if age_hours > 48:
+                    logger.debug(f"  Skipping stale headline "
+                                f"({age_hours:.0f}h old): {title[:40]}")
+                    continue
+            
             headlines.append({
                 "title":     title,
                 "source":    source_name,
-                "published": published,
+                "published": published_str,
                 "id":        _headline_id(title)
             })
+
         logger.info(f"  {source_name}: {len(headlines)} headlines")
     except Exception as e:
         logger.warning(f"  {source_name}: FAILED — {e}")

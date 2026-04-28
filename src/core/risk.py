@@ -109,6 +109,36 @@ class RiskManager:
             return False, f"Cooldown: {elapsed:.2f}s since last order (min {COOLDOWN_SECONDS}s)"
         return True, ""
 
+    def set_sector_cache(self, cache: dict, lock):
+        """Wire live heatmap cache into RiskManager."""
+        self._sector_cache = cache
+        self._sector_cache_lock = lock
+
+    def _check_sector_alignment(self, signal: SignalEvent,
+                                  symbol: str) -> tuple[bool, str]:
+        """
+        Real-time sector convergence check using live heatmap.
+        Blocks signal if sector contradicts sentiment.
+        """
+        if not hasattr(self, '_sector_cache') or not self._sector_cache:
+            return True, ""   # No cache yet — allow through
+
+        from src.beetle.intelligence import get_sector
+        sector = get_sector(symbol)
+        if sector == "UNKNOWN":
+            return True, ""   # Unknown sector — allow through
+
+        with self._sector_cache_lock:
+            sector_data = self._sector_cache.get(sector, {})
+
+        bias = sector_data.get("bias", "NEUTRAL")
+
+        if signal.direction == "BUY" and bias == "BEARISH":
+            return False, f"Live sector gate: BUY blocked — {sector} is BEARISH"
+        if signal.direction == "SELL" and bias == "BULLISH":
+            return False, f"Live sector gate: SELL blocked — {sector} is BULLISH"
+        return True, ""
+    
     def _check_sentiment_gate(self, signal: SignalEvent) -> tuple[bool, str]:
         """
         Block signal if it contradicts strong FinBERT sentiment.
@@ -152,6 +182,7 @@ class RiskManager:
                 self._check_time_gate(),
                 self._check_cooldown(),
                 self._check_sentiment_gate(signal),
+                self._check_sector_alignment(signal, signal.symbol),
             ]
             for passed, reason in checks:
                 if not passed:

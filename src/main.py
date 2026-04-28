@@ -34,6 +34,10 @@ from src.beetle.intelligence      import run_pipeline, save_watchlist
 
 LOCK_FILE = "engine.lock"
 
+# Shared sector cache — updated every 5 minutes
+sector_cache = {}
+sector_cache_lock = threading.Lock()
+
 def acquire_lock() -> bool:
     """
     Create a lock file to prevent duplicate engine instances.
@@ -138,6 +142,35 @@ def run_morning_beetle() -> list:
         return []
 
 
+def start_heatmap_refresher(interval_seconds: int = 300):
+    """
+    Background thread — refreshes sector heatmap every 5 minutes.
+    Updates shared sector_cache dict.
+    """
+    from src.beetle.sector_heatmap import get_heatmap
+
+    def _refresh():
+        while True:
+            try:
+                now = datetime.now().time()
+                # Only refresh during market hours
+                if dtime(9, 12) <= now <= dtime(15, 30):
+                    heatmap = get_heatmap(use_mock_if_closed=False)
+                    with sector_cache_lock:
+                        sector_cache.update(heatmap)
+                    bullish = sum(1 for v in heatmap.values() if v["bias"] == "BULLISH")
+                    bearish = sum(1 for v in heatmap.values() if v["bias"] == "BEARISH")
+                    logger.info(f"  🌡️  Heatmap refreshed — "
+                               f"🟢{bullish} BULLISH | 🔴{bearish} BEARISH")
+            except Exception as e:
+                logger.warning(f"  Heatmap refresh failed: {e}")
+            time.sleep(interval_seconds)
+
+    t = threading.Thread(target=_refresh, daemon=True, name="HeatmapRefresher")
+    t.start()
+    logger.info("✅ Heatmap refresher started — updates every 5 minutes.")
+    return t
+
 def main():
     logger.info("=" * 60)
     logger.info("  MORNING BEETLE ENGINE — STARTING")
@@ -180,7 +213,8 @@ def main():
     db        = TradeDB(db_path="trades.db")
     cleanup_stale_trades(db)
     risk      = RiskManager(engine=engine, trade_db=db)
-    exits     = ExitManager(engine=engine, trade_db=db)
+    risk.set_sector_cache(sector_cache, sector_cache_lock)
+    exits     = ExitManager(engine=engine, trade_db=db, notifier=notifier)
     execution = ExecutionHandler(engine=engine, trade_db=db,
                                  is_paper_trading=IS_PAPER_TRADING)
     
@@ -246,6 +280,9 @@ def main():
     # ── Step 6: Start EventBus ────────────────────────────────────────
     engine.run_in_thread()
 
+    # ── Step 6b: Start heatmap refresher ─────────────────────────────
+    start_heatmap_refresher(interval_seconds=300)
+
     # ── Step 7: Start WebSocket ───────────────────────────────────────
     data_handler.start()
     logger.info("WebSocket streaming started.")
@@ -271,6 +308,16 @@ def main():
                            f"| Daily P&L: ₹{daily_pnl:.2f}")
 
             time.sleep(1)
+
+            # 15:00 — Tighten trail stops
+            if now.hour == 15 and now.minute == 0 and now.second < 2:
+                logger.info("🔧 15:00 — Tightening trail stops...")
+                exits.tighten_trails()
+
+            # 15:10 — Move all SLs to breakeven
+            if now.hour == 15 and now.minute == 10 and now.second < 2:
+                logger.info("🔧 15:10 — Moving SLs to breakeven...")
+                exits.move_to_breakeven()
 
             # EOD Summary at 15:30
             if now.hour == 15 and now.minute == 30 and now.second < 2:
