@@ -40,10 +40,26 @@ class RiskManager:
         self.trade_db    = trade_db
         self._lock       = threading.Lock()
         self._last_order_time = None
-        self.stop_all    = False 
-        self._bypass_time_gate = False  # Fires when daily loss limit hit
+        self._bypass_time_gate = False
 
+        # Check if STOP_ALL was active from a previous session today
+        self.stop_all = self._check_stop_all_persisted()
+        if self.stop_all:
+            logger.warning("🛑 STOP_ALL restored from DB — daily loss limit was breached earlier today.")
+        
         logger.info("RiskManager initialised.")
+
+    def _check_stop_all_persisted(self) -> bool:
+        """Check DB for STOP_ALL event from today."""
+        from sqlalchemy.orm import Session
+        from src.core.trade_db import SystemLog
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        with Session(self.trade_db.engine) as session:
+            stop_event = session.query(SystemLog).filter(
+                SystemLog.event == "STOP_ALL",
+                SystemLog.timestamp >= today
+            ).first()
+            return stop_event is not None
 
     def _check_daily_loss(self) -> tuple[bool, str]:
         """Block if daily P&L < -₹2,000."""
