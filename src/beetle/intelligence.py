@@ -67,7 +67,7 @@ SECTOR_MAP = {
     "VBL":        "NIFTY FMCG",
     "ITC":        "NIFTY FMCG",
     # ── Auto ──────────────────────────────────────────────────────
-    "TATAMOTORS": "NIFTY AUTO",
+    "TMCV":       "NIFTY AUTO",
     "MARUTI":     "NIFTY AUTO",
     "EICHERMOT":  "NIFTY AUTO",
     "HEROMOTOCO": "NIFTY AUTO",

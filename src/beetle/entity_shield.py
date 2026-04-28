@@ -26,12 +26,12 @@ KNOWN_ALIASES = {
     "TATA CONSULTANCY":  "TCS",
     "TATA CHEMICALS":    "TATACHEM",
     "TATA CONSUMER":     "TATACONSUM",
-    "TATA MOTORS":       "TATAMOTORS",
+    "TATA MOTORS":       "TMCV",
     "TATA STEEL":        "TATASTEEL",
     "TATA POWER":        "TATAPOWER",
     "TATA ELXSI":        "TATAELXSI",
     "TATA COMM":         "TATACOMM",
-    "TATAMOTORS":        "TATAMOTORS",
+    "TATAMOTORS":        "TMCV",
     # ── Banks ────────────────────────────────────────────────────
     "HINDUSTAN UNILEVER": "HINDUNILVR",
     "BANK OF MAHARASHTRA": "MAHABANK",
@@ -173,6 +173,18 @@ def find_ticker(headline: str, instruments: dict,
     """
     headline_upper = headline.upper()
     cleaned = _clean_headline(headline)
+
+    # Special case: TATA MOTORS vs TATA CHEMICALS disambiguation
+    if "TATA MOTORS" in headline_upper:
+        if "TMCV" in instruments:
+            boost = _keyword_boost(headline)
+            return {
+                "symbol":     "TMCV",
+                "name":       instruments["TMCV"]["name"],
+                "confidence": round(min(1.0, 0.95 + boost), 3),
+                "raw_score":  100,
+                "boosted":    boost > 0
+            }
 
     # Step 1 — Known aliases first (sorted longest → shortest)
     for alias, symbol in sorted(KNOWN_ALIASES.items(),
