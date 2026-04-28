@@ -32,6 +32,38 @@ from src.strategies.rsi_momentum import RSIMomentum
 from src.beetle.instrument_master import load_instruments
 from src.beetle.intelligence      import run_pipeline, save_watchlist
 
+LOCK_FILE = "engine.lock"
+
+def acquire_lock() -> bool:
+    """
+    Create a lock file to prevent duplicate engine instances.
+    Returns True if lock acquired, False if another instance is running.
+    """
+    if os.path.exists(LOCK_FILE):
+        # Check if the lock is stale (older than 24 hours)
+        lock_age = datetime.now().timestamp() - os.path.getmtime(LOCK_FILE)
+        if lock_age > 86400:  # 24 hours
+            logger.warning("Stale lock file found — removing.")
+            os.remove(LOCK_FILE)
+        else:
+            logger.error(f"❌ Engine already running! Lock file exists: {LOCK_FILE}")
+            logger.error("   If this is wrong, delete engine.lock and restart.")
+            return False
+
+    with open(LOCK_FILE, "w") as f:
+        f.write(f"{datetime.now().isoformat()}\n")
+        f.write(f"PID: {os.getpid()}\n")
+    logger.info(f"✅ Engine lock acquired (PID: {os.getpid()})")
+    return True
+
+
+def release_lock():
+    """Remove lock file on clean shutdown."""
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+        logger.info("✅ Engine lock released.")
+
+
 # ── Logging setup ────────────────────────────────────────────────────
 logging.basicConfig(
     level   = logging.INFO,
@@ -58,6 +90,39 @@ def load_watchlist() -> list:
         logger.error(f"Failed to load watchlist.json: {e}")
         return []
 
+def cleanup_stale_trades(db: TradeDB):
+    """
+    On engine startup, auto-close any trades left OPEN from previous days.
+    Prevents stale positions from blocking new signals.
+    """
+    from sqlalchemy.orm import Session
+    from src.core.trade_db import Trade
+    from datetime import date
+
+    today = datetime.now().date()
+
+    with Session(db.engine) as session:
+        stale = session.query(Trade).filter(
+            Trade.status == "OPEN"
+        ).all()
+
+        cleaned = 0
+        for trade in stale:
+            trade_date = trade.entry_time.date() if trade.entry_time else None
+            if trade_date and trade_date < today:
+                trade.status      = "CLOSED"
+                trade.exit_reason = "STALE_CLEANUP"
+                trade.exit_price  = trade.entry_price  # No P&L — unknown exit
+                trade.pnl         = 0.0
+                cleaned += 1
+                logger.info(f"  🧹 Stale trade cleaned: {trade.symbol} "
+                           f"[ID:{trade.id}] from {trade_date}")
+
+        if cleaned > 0:
+            session.commit()
+            logger.info(f"  ✅ {cleaned} stale trades closed.")
+        else:
+            logger.info("  ✅ No stale trades found.")
 
 def run_morning_beetle() -> list:
     """Run Morning Beetle pre-market pipeline."""
@@ -78,6 +143,10 @@ def main():
     logger.info(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
+     # ── Engine lock — prevent duplicate instances ─────────────────
+    if not acquire_lock():
+        return
+    
     # ── Telegram notifier ─────────────────────────────────────────────
     try:
         notifier = TelegramNotifier()
@@ -107,6 +176,7 @@ def main():
     # ── Step 2: Initialise core modules ──────────────────────────────
     engine    = TradingEngine(timeout=3.0, is_paper_trading=IS_PAPER_TRADING)
     db        = TradeDB(db_path="trades.db")
+    cleanup_stale_trades(db)
     risk      = RiskManager(engine=engine, trade_db=db)
     exits     = ExitManager(engine=engine, trade_db=db)
     execution = ExecutionHandler(engine=engine, trade_db=db,
@@ -223,7 +293,8 @@ def main():
         # ── Shutdown ─────────────────────────────────────────────────
         data_handler.stop()
         engine.stop()
-
+        release_lock()
+        
         # Final P&L
         daily_pnl = db.get_daily_pnl()
         open_pos  = exits.get_open_positions()

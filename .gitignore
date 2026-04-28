@@ -25,3 +25,5 @@ desktop.ini
 # IDE
 .vscode/settings.json
 *.code-workspace
+
+engine.lock
