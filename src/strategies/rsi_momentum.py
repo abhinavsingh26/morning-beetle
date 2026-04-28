@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import pandas as pd
+from sqlalchemy import event
 import talib
 from datetime import datetime, time
 from src.core.events import MarketEvent, SignalEvent
@@ -14,6 +15,7 @@ RSI_BUY       = 55    # RSI crosses above 55 → BUY
 RSI_SELL      = 45    # RSI crosses below 45 → SELL
 ADX_MIN       = 25    # ADX must be ≥ 25 (trend must be strong)
 CANDLE_INTERVAL = 5   # 5-minute candles
+SOFT_OPEN_GATE = time(9, 20)   # No RSI signals before 09:20 AM
 
 
 class RSIMomentum:
@@ -70,6 +72,11 @@ class RSIMomentum:
             return
         if self.signal_fired:
             return
+       
+        # Soft gate — no signals in first 5 minutes of market open
+        if event.timestamp.time() < SOFT_OPEN_GATE:
+            return
+
 
         candle = self._build_candle(event)
         self.candles.append(candle)

@@ -69,7 +69,8 @@ SECTOR_MAP = {
     "ABFRL": "NIFTY FMCG"
 }
 
-MAX_WATCHLIST = 3
+MAX_WATCHLIST       = 5   # Scan top 5 tickers
+MAX_POSITIONS       = 3   # Take first 3 that cross all gates
 
 
 def get_sector(symbol: str) -> str:
@@ -169,6 +170,9 @@ def run_pipeline(use_mock_heatmap: bool = False) -> list:
         reverse=True
     )[:MAX_WATCHLIST]
 
+    logger.info(f"   Watchlist expanded: {len(watchlist)} candidates "
+               f"(max {MAX_POSITIONS} positions will be taken)")
+
     elapsed = (datetime.now() - start_time).total_seconds()
     logger.info(f"\n✅ Pipeline complete in {elapsed:.1f}s")
     logger.info(f"   Watchlist: {[w['symbol'] for w in watchlist]}")
@@ -181,6 +185,7 @@ def save_watchlist(watchlist: list, path: str = "watchlist.json"):
     output = {
         "generated_at": datetime.now().isoformat(),
         "count":        len(watchlist),
+        "max_positions": MAX_POSITIONS,
         "tickers":      watchlist
     }
     with open(path, "w") as f:

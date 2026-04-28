@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 DAILY_LOSS_LIMIT  = -2000.0   # ₹2,000 max daily loss
 ENTRY_CUTOFF      = time(10, 30)   # No new positions after 10:30 AM
 COOLDOWN_SECONDS  = 1.0            # Min 1s between consecutive orders
-#MAX_POSITION_SIZE = 100
-MAX_POSITION_VALUE = 50000   # Max ₹50,000 per trade            # Default quantity per trade
+MAX_SIMULTANEOUS_POSITIONS = 3   # Never more than 3 open at once
+
+CAPITAL_PER_TRADE_PCT = 0.30   # 30% of capital per trade
 
 # Sentiment gate thresholds per Blueprint
 SENTIMENT_BLOCK_BULL = 0.4    # Block SELL if FinBERT > +0.4
@@ -57,6 +58,13 @@ class RiskManager:
                 f"Daily loss limit breached: ₹{daily_pnl:.2f}"
             )
             return False, f"Daily loss limit breached: ₹{daily_pnl:.2f}"
+        return True, ""
+    
+    def _check_max_positions(self) -> tuple[bool, str]:
+        """Block if already at maximum simultaneous positions."""
+        open_trades = self.trade_db.get_open_trades()
+        if len(open_trades) >= MAX_SIMULTANEOUS_POSITIONS:
+            return False, f"Max positions reached: {len(open_trades)}/{MAX_SIMULTANEOUS_POSITIONS}"
         return True, ""
 
     def _check_duplicate_position(self, symbol: str) -> tuple[bool, str]:
@@ -103,10 +111,16 @@ class RiskManager:
         return MAX_POSITION_SIZE'''
     
     def _calculate_quantity(self, symbol: str, ltp: float) -> int:
-        """Position size capped at ₹50,000 per trade."""
+        """
+        Capital-aware position sizing.
+        Each trade = 30% of TOTAL_CAPITAL.
+        Never more than MAX_SIMULTANEOUS_POSITIONS open.
+        """
+        total_capital = float(os.getenv("TOTAL_CAPITAL", "50000"))
+        capital_per_trade = total_capital * CAPITAL_PER_TRADE_PCT
         if ltp <= 0:
             return 1
-        qty = int(MAX_POSITION_VALUE / ltp)
+        qty = int(capital_per_trade / ltp)
         return max(1, qty)
 
     def validate(self, signal: SignalEvent) -> tuple[bool, str]:
@@ -117,6 +131,7 @@ class RiskManager:
         with self._lock:
             checks = [
                 self._check_daily_loss(),
+                self._check_max_positions(),
                 self._check_duplicate_position(signal.symbol),
                 self._check_time_gate(),
                 self._check_cooldown(),

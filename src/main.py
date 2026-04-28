@@ -84,7 +84,9 @@ def load_watchlist() -> list:
         with open("watchlist.json") as f:
             data = json.load(f)
         tickers = data.get("tickers", [])
-        logger.info(f"Watchlist loaded: {[t['symbol'] for t in tickers]}")
+        max_pos = data.get("max_positions", 3)
+        logger.info(f"Watchlist loaded: {[t['symbol'] for t in tickers]} "
+                   f"(max {max_pos} positions)")
         return tickers
     except Exception as e:
         logger.error(f"Failed to load watchlist.json: {e}")
@@ -294,7 +296,7 @@ def main():
         data_handler.stop()
         engine.stop()
         release_lock()
-        
+
         # Final P&L
         daily_pnl = db.get_daily_pnl()
         open_pos  = exits.get_open_positions()
