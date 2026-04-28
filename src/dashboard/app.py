@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 from sqlalchemy.orm import Session
+import time as _time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
@@ -213,10 +214,14 @@ with col_log:
 st.divider()
 
 # ── Auto-refresh ──────────────────────────────────────────────────────
-st.markdown("*Dashboard auto-refreshes every 10 seconds*")
-st.markdown(
-    """
-    <meta http-equiv="refresh" content="10">
-    """,
-    unsafe_allow_html=True
-)
+
+
+st.divider()
+col_refresh, col_time = st.columns([3, 1])
+with col_refresh:
+    st.markdown("*Dashboard auto-refreshes every 10 seconds*")
+with col_time:
+    st.markdown(f"*{datetime.now().strftime('%H:%M:%S')}*")
+
+_time.sleep(10)
+st.rerun()

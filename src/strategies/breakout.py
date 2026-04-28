@@ -7,12 +7,12 @@ from src.core.events import MarketEvent, SignalEvent
 
 logger = logging.getLogger(__name__)
 
-# Strategy parameters per Blueprint
+# Strategy parameters — tuned for NSE intraday
 BREAKOUT_BUFFER    = 0.001   # 0.1% false breakout buffer
-ATR_MIN_PCT        = 0.005   # ATR must be > 0.5% of price
-VOLUME_MULT        = 1.5     # Volume must be 1.5x 5-day average
+ATR_MIN_PCT        = 0.003   # Reduced from 0.5% to 0.3% — less strict
+VOLUME_MULT        = 1.2     # Reduced from 1.5x to 1.2x — less strict
 ATR_PERIOD         = 14
-REFERENCE_CANDLE_END = time(9, 30)   # 15-min candle: 09:15–09:30
+REFERENCE_CANDLE_END = time(9, 30)  # 15-min candle: 09:15–09:30
 
 
 class MorningBreakout:
@@ -22,7 +22,7 @@ class MorningBreakout:
 
     BUY  trigger: price breaks above Reference High + 0.1% buffer
     SELL trigger: price breaks below Reference Low  - 0.1% buffer
-    Filters: ATR(14) > 0.5% of price, Volume > 1.5x 5-day avg
+    Filters: ATR(14) > 0.3% of price, Volume > 1.2x 5-day avg
     """
 
     def __init__(self, engine, symbol: str, sentiment_score: float = 0.0):

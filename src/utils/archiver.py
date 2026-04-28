@@ -18,68 +18,85 @@ HDD_BASE  = "I:/01_Active_Projects/The_Morning_Star/03_output"
 def archive_daily():
     """
     Post-market archiver — runs at 16:00 PM daily.
-    Copies trades.db snapshot + live_logs.log to I: drive.
-    Clears live_logs.log for next day.
+    Copies trades.db + live_logs.log to I: drive.
+    Falls back to C: drive if I: drive unavailable.
     """
     today     = datetime.now().strftime("%Y-%m-%d")
-    dest_dir  = os.path.join(HDD_BASE, today)
     timestamp = datetime.now().strftime("%H:%M:%S")
 
-    logger.info(f"Archiver starting — {today}")
+    # Check I: drive availability
+    i_drive_available = os.path.exists("I:/")
+    if i_drive_available:
+        dest_dir = os.path.join(HDD_BASE, today)
+        logger.info(f"Archiver starting — {today} → I: drive")
+    else:
+        fallback = os.path.join(SSD_BASE, "archive", today)
+        dest_dir = fallback
+        logger.warning(f"⚠️  I: drive unavailable — using fallback: {fallback}")
 
-    # Create dated folder on I: drive
+        # Send Telegram alert if notifier available
+        try:
+            from src.notifications.telegram_bot import TelegramNotifier
+            from dotenv import load_dotenv
+            load_dotenv("config/.env")
+            notifier = TelegramNotifier()
+            notifier.send(
+                f"⚠️ <b>Archiver Warning</b>\n"
+                f"I: drive unavailable on {today}.\n"
+                f"Data archived to C: drive fallback."
+            )
+        except Exception:
+            pass
+
     os.makedirs(dest_dir, exist_ok=True)
     logger.info(f"  Archive folder: {dest_dir}")
 
     archived = []
     failed   = []
 
-    # ── Archive trades.db ─────────────────────────────────────────────
+    # Archive trades.db
     db_src  = os.path.join(SSD_BASE, "trades.db")
     db_dest = os.path.join(dest_dir, f"trades_{today}.db")
     if os.path.exists(db_src):
         shutil.copy2(db_src, db_dest)
         size = os.path.getsize(db_dest) / 1024
-        archived.append(f"trades.db → {db_dest} ({size:.1f} KB)")
+        archived.append(f"trades.db ({size:.1f} KB)")
         logger.info(f"  ✅ trades.db archived ({size:.1f} KB)")
     else:
         failed.append("trades.db not found")
         logger.warning("  ⚠️  trades.db not found")
 
-    # ── Archive live_logs.log ─────────────────────────────────────────
+    # Archive live_logs.log
     log_src  = os.path.join(SSD_BASE, "live_logs.log")
     log_dest = os.path.join(dest_dir, f"live_logs_{today}.log")
     if os.path.exists(log_src):
         shutil.copy2(log_src, log_dest)
         size = os.path.getsize(log_dest) / 1024
-        archived.append(f"live_logs.log → {log_dest} ({size:.1f} KB)")
+        archived.append(f"live_logs.log ({size:.1f} KB)")
         logger.info(f"  ✅ live_logs.log archived ({size:.1f} KB)")
-
-        # Clear live_logs.log for next day
         with open(log_src, "w") as f:
             f.write(f"# Log cleared by archiver at {timestamp} on {today}\n")
         logger.info("  ✅ live_logs.log cleared for next day")
     else:
         failed.append("live_logs.log not found")
-        logger.warning("  ⚠️  live_logs.log not found")
 
-    # ── Archive watchlist.json ────────────────────────────────────────
+    # Archive watchlist.json
     wl_src  = os.path.join(SSD_BASE, "watchlist.json")
     wl_dest = os.path.join(dest_dir, f"watchlist_{today}.json")
     if os.path.exists(wl_src):
         shutil.copy2(wl_src, wl_dest)
-        archived.append(f"watchlist.json → {wl_dest}")
+        archived.append("watchlist.json")
         logger.info(f"  ✅ watchlist.json archived")
 
-    # ── Summary ───────────────────────────────────────────────────────
-    logger.info(f"\nArchiver complete — {len(archived)} files archived, "
-               f"{len(failed)} failed")
+    logger.info(f"\nArchiver complete — {len(archived)} files, "
+               f"{len(failed)} failed — {'I: drive' if i_drive_available else 'C: fallback'}")
 
     return {
-        "date":     today,
-        "dest":     dest_dir,
-        "archived": archived,
-        "failed":   failed
+        "date":      today,
+        "dest":      dest_dir,
+        "archived":  archived,
+        "failed":    failed,
+        "i_drive":   i_drive_available
     }
 
 
