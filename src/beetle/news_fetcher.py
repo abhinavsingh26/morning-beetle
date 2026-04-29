@@ -11,6 +11,11 @@ FEEDS = {
     "google_business":   "https://news.google.com/rss/search?q=NSE+India+stock+market&hl=en-IN&gl=IN&ceid=IN:en",
     "google_earnings":   "https://news.google.com/rss/search?q=India+quarterly+results+earnings&hl=en-IN&gl=IN&ceid=IN:en",
     "google_corporate":  "https://news.google.com/rss/search?q=India+stock+dividend+acquisition+order+win&hl=en-IN&gl=IN&ceid=IN:en",
+    # ── New sources ───────────────────────────────────────────────
+    "livemint_markets":  "https://www.livemint.com/rss/markets",
+    "livemint_companies":"https://www.livemint.com/rss/companies",
+    "hindu_business":    "https://www.thehindu.com/business/markets/feeder/default.rss",
+    "ndtv_profit":       "https://feeds.feedburner.com/ndtvprofit-latest",
 }
 
 def _headline_id(title: str) -> str:

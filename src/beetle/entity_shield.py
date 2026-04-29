@@ -94,6 +94,8 @@ KNOWN_ALIASES = {
     "ULTRATECH":         "ULTRACEMCO",
     "VEDANTA":           "VEDL",
     "GRASIM":            "GRASIM",
+    "COAL INDIA":        "COALINDIA",
+    "COALINDIA":         "COALINDIA",
     # ── Defence ──────────────────────────────────────────────────
     "MAZAGON DOCK":      "MAZDOCK",
     "COCHIN SHIPYARD":   "COCHINSHIP",
@@ -135,6 +137,10 @@ GENERIC_TERMS = [
     # Indices
     "MIDCAP", "SMALLCAP", "LARGECAP", "BSE", "NSE",
     "NIFTY50", "NIFTY 50", "SENSEX30",
+    # GENERIC TERMS
+    "RUPEE", "CRUDE", "OIL PRICES", "EXIT POLL", "DONALD TRUMP",
+    "US FED", "FEDERAL RESERVE", "IRAN", "TAIWAN", "KERALA",
+    "PUDUCHERRY", "ALLAHABAD", "ELON MUSK", "OPENAI",
 ]
 
 
