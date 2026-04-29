@@ -81,6 +81,9 @@ logger = logging.getLogger(__name__)
 
 IS_PAPER_TRADING = os.getenv("IS_PAPER_TRADING", "True") == "True"
 
+MIN_ACTIVE_CANDIDATES = 3    # Trigger refresh if below this
+MAX_SUBSCRIPTIONS     = 10   # Never subscribe more than this
+
 
 def load_watchlist() -> list:
     """Load watchlist.json produced by Morning Beetle."""
@@ -169,6 +172,112 @@ def start_heatmap_refresher(interval_seconds: int = 300):
     t = threading.Thread(target=_refresh, daemon=True, name="HeatmapRefresher")
     t.start()
     logger.info("✅ Heatmap refresher started — updates every 5 minutes.")
+    return t
+
+def start_dynamic_universe(engine, data_handler, instruments,
+                            strategies, watchlist, notifier,
+                            sector_cache, sector_cache_lock):
+    """
+    Background thread — monitors active candidates.
+    If fewer than MIN_ACTIVE_CANDIDATES remain viable,
+    re-runs pipeline and subscribes fresh tickers.
+    """
+    from src.beetle.intelligence import run_pipeline_fresh
+    from src.strategies.breakout import MorningBreakout
+    from src.strategies.rsi_momentum import RSIMomentum
+
+    subscribed_symbols = [t["symbol"] for t in watchlist]
+    total_subscribed   = len(subscribed_symbols)
+
+    def _monitor():
+        nonlocal subscribed_symbols, total_subscribed
+
+        while True:
+            time.sleep(300)   # Check every 5 minutes
+
+            now = datetime.now().time()
+
+            # Only refresh during entry window
+            if not (dtime(9, 15) <= now <= dtime(10, 15)):
+                continue
+
+            # Count viable candidates (not yet traded, not blocked)
+            open_trades  = [t.symbol for t in data_handler.engine
+                           .__dict__.get('_open', [])]
+            active = [s for s in subscribed_symbols
+                     if s not in open_trades]
+
+            if len(active) >= MIN_ACTIVE_CANDIDATES:
+                continue
+
+            # Check cap
+            if total_subscribed >= MAX_SUBSCRIPTIONS:
+                logger.info("🔄 Dynamic refresh: max subscriptions reached.")
+                continue
+
+            logger.info(f"🔄 Only {len(active)} active candidates — "
+                       f"triggering universe refresh...")
+
+            try:
+                fresh = run_pipeline_fresh(
+                    exclude_symbols=subscribed_symbols
+                )
+
+                if not fresh:
+                    logger.info("🔄 No fresh candidates found.")
+                    continue
+
+                # Subscribe new tickers
+                slots_available = MAX_SUBSCRIPTIONS - total_subscribed
+                new_tickers = fresh[:slots_available]
+
+                for t in new_tickers:
+                    symbol = t["symbol"]
+                    if symbol in subscribed_symbols:
+                        continue
+
+                    # Add to WebSocket
+                    new_tokens = data_handler.subscribe([symbol])
+                    if new_tokens:
+                        data_handler.ticker.subscribe(new_tokens)
+                        data_handler.ticker.set_mode(
+                            data_handler.ticker.MODE_FULL, new_tokens
+                        )
+
+                    # Add strategies
+                    strategies[symbol] = {
+                        "breakout": MorningBreakout(
+                            engine, symbol, t.get("sentiment_score", 0.0)
+                        ),
+                        "rsi": RSIMomentum(
+                            engine, symbol, t.get("sentiment_score", 0.0)
+                        )
+                    }
+
+                    subscribed_symbols.append(symbol)
+                    total_subscribed += 1
+
+                    logger.info(f"  🆕 Added to universe: {symbol} "
+                               f"({t['sentiment_label']} "
+                               f"{t['sentiment_score']:+.2f})")
+
+                    # Telegram alert
+                    if notifier:
+                        notifier.send(
+                            f"🔄 <b>Universe Refresh</b>\n"
+                            f"Added {symbol} — {t['name']}\n"
+                            f"Sentiment: {t['sentiment_score']:+.2f} "
+                            f"{t['sentiment_label']}\n"
+                            f"Sector: {t['sector']} → {t['sector_bias']}"
+                        )
+
+            except Exception as e:
+                logger.error(f"🔄 Dynamic refresh error: {e}")
+
+    t = threading.Thread(target=_monitor, daemon=True,
+                        name="DynamicUniverse")
+    t.start()
+    logger.info("✅ Dynamic universe monitor started.")
     return t
 
 def main():
@@ -282,6 +391,13 @@ def main():
 
     # ── Step 6b: Start heatmap refresher ─────────────────────────────
     start_heatmap_refresher(interval_seconds=300)
+
+    # ── Step 6c: Start dynamic universe monitor ───────────────────────
+    start_dynamic_universe(
+        engine, data_handler, instruments,
+        strategies, watchlist, notifier,
+        sector_cache, sector_cache_lock
+    )
 
     # ── Step 7: Start WebSocket ───────────────────────────────────────
     data_handler.start()

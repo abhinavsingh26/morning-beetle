@@ -309,6 +309,80 @@ def run_pipeline(use_mock_heatmap: bool = False) -> list:
 
     return watchlist
 
+def run_pipeline_fresh(exclude_symbols: list = []) -> list:
+    """
+    Re-run pipeline excluding already-subscribed symbols.
+    Used when dynamic universe refresh is triggered.
+    """
+    logger.info("🔄 Dynamic universe refresh triggered...")
+    
+    # Step 1 — Load instruments
+    instruments = load_instruments()
+
+    # Step 2 — Fetch fresh headlines
+    raw_headlines = fetch_all_headlines(max_per_source=20)
+
+    # Step 3 — EntityShield
+    matched = filter_headlines(raw_headlines, instruments)
+
+    # Step 4 — FinBERT scoring
+    scored = []
+    for h in matched:
+        result = score_headline(h["title"])
+        score  = result["score"]
+        if DEAD_ZONE_MIN <= score <= DEAD_ZONE_MAX:
+            continue
+        # Skip already subscribed symbols
+        if h["ticker"] in exclude_symbols:
+            continue
+        scored.append({
+            **h,
+            "sentiment_score": score,
+            "sentiment_label": result["label"]
+        })
+
+    # Step 5 — Heatmap gate
+    heatmap = get_heatmap(use_mock_if_closed=True)
+    candidates = []
+    for h in scored:
+        symbol = h["ticker"]
+        sector = get_sector(symbol)
+        sector_data = heatmap.get(sector, {})
+        sector_bias = sector_data.get("bias", "UNKNOWN")
+        sentiment   = h["sentiment_label"]
+
+        if sentiment == "BULLISH" and sector_bias == "BEARISH":
+            continue
+        if sentiment == "BEARISH" and sector_bias == "BULLISH":
+            continue
+
+        candidates.append({
+            "symbol":          symbol,
+            "name":            h["ticker_name"],
+            "sentiment_score": h["sentiment_score"],
+            "sentiment_label": h["sentiment_label"],
+            "sector":          sector,
+            "sector_bias":     sector_bias,
+            "confidence":      h["confidence"],
+            "headline":        h["title"],
+            "source":          h["source"]
+        })
+
+    # Deduplicate and sort
+    deduped = {}
+    for c in candidates:
+        sym = c["symbol"]
+        if sym not in deduped or c["confidence"] > deduped[sym]["confidence"]:
+            deduped[sym] = c
+
+    fresh = sorted(
+        deduped.values(),
+        key=lambda x: abs(x["sentiment_score"]),
+        reverse=True
+    )[:MAX_WATCHLIST]
+
+    logger.info(f"🔄 Fresh candidates: {[f['symbol'] for f in fresh]}")
+    return fresh
 
 def save_watchlist(watchlist: list, path: str = "watchlist.json"):
     """Save watchlist to JSON file."""
