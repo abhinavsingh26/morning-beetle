@@ -182,7 +182,7 @@ SECTOR_MAP = {
     "INDHOTEL":   "NIFTY FMCG",
 }
 
-MAX_WATCHLIST       = 5   # Scan top 5 tickers
+MAX_WATCHLIST       = 10   # Scan top 10 tickers
 MAX_POSITIONS       = 3   # Take first 3 that cross all gates
 
 

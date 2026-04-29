@@ -176,7 +176,7 @@ def start_heatmap_refresher(interval_seconds: int = 300):
 
 def start_dynamic_universe(engine, data_handler, instruments,
                             strategies, watchlist, notifier,
-                            sector_cache, sector_cache_lock):
+                            sector_cache, sector_cache_lock, db):
     """
     Background thread — monitors active candidates.
     If fewer than MIN_ACTIVE_CANDIDATES remain viable,
@@ -188,6 +188,7 @@ def start_dynamic_universe(engine, data_handler, instruments,
 
     subscribed_symbols = [t["symbol"] for t in watchlist]
     total_subscribed   = len(subscribed_symbols)
+    db_ref             = db   # Reference for use inside thread
 
     def _monitor():
         nonlocal subscribed_symbols, total_subscribed
@@ -201,11 +202,32 @@ def start_dynamic_universe(engine, data_handler, instruments,
             if not (dtime(9, 15) <= now <= dtime(10, 15)):
                 continue
 
-            # Count viable candidates (not yet traded, not blocked)
-            open_trades  = [t.symbol for t in data_handler.engine
-                           .__dict__.get('_open', [])]
-            active = [s for s in subscribed_symbols
-                     if s not in open_trades]
+            # Count candidates that haven't traded or signalled today
+            from sqlalchemy.orm import Session
+            from src.core.trade_db import Trade, Signal
+
+            today = datetime.now().replace(hour=0, minute=0, second=0,
+                                           microsecond=0)
+            with Session(db_ref.engine) as session:
+                # Symbols with any trade today
+                traded = [
+                    t.symbol for t in session.query(Trade).filter(
+                        Trade.entry_time >= today
+                    ).all()
+                ]
+                # Symbols that fired any signal today
+                signalled = [
+                    s.symbol for s in session.query(Signal).filter(
+                        Signal.timestamp >= today
+                    ).all()
+                ]
+
+            # Active = subscribed but not yet traded AND not yet signalled
+            exhausted = set(traded + signalled)
+            active = [s for s in subscribed_symbols if s not in exhausted]
+
+            logger.info(f"🔄 Universe check — active: {len(active)}/{len(subscribed_symbols)} "
+                       f"(traded: {len(set(traded))}, signalled: {len(set(signalled))})")
 
             if len(active) >= MIN_ACTIVE_CANDIDATES:
                 continue
@@ -396,7 +418,7 @@ def main():
     start_dynamic_universe(
         engine, data_handler, instruments,
         strategies, watchlist, notifier,
-        sector_cache, sector_cache_lock
+        sector_cache, sector_cache_lock, db
     )
 
     # ── Step 7: Start WebSocket ───────────────────────────────────────
