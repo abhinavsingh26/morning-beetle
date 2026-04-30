@@ -180,6 +180,11 @@ SECTOR_MAP = {
     "POLICYBZR":  "NIFTY BANK",
     "DELHIVERY":  "NIFTY IT",
     "INDHOTEL":   "NIFTY FMCG",
+    #-------- Improvements  --------
+    "SANOFI":     "NIFTY PHARMA",
+    "SCHAEFFLER": "NIFTY AUTO",
+    "RAIN":       "NIFTY METAL",
+    "GOCLCORP":   "NIFTY ENERGY",
 }
 
 MAX_WATCHLIST       = 10   # Scan top 10 tickers
