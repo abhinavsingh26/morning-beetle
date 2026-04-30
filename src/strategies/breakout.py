@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import talib
 from datetime import datetime, time
+from src.strategies.base import Strategy
 from src.core.events import MarketEvent, SignalEvent
 
 logger = logging.getLogger(__name__)
@@ -15,21 +16,28 @@ ATR_PERIOD         = 14
 REFERENCE_CANDLE_END = time(9, 30)  # 15-min candle: 09:15–09:30
 
 
-class MorningBreakout:
+class MorningBreakout(Strategy):
     """
-    Strategy 1 — Morning Breakout.
+    Strategy S1 — Morning Breakout.
     Captures directional move after first 15-min candle consolidation.
 
     BUY  trigger: price breaks above Reference High + 0.1% buffer
     SELL trigger: price breaks below Reference Low  - 0.1% buffer
     Filters: ATR(14) > 0.3% of price, Volume > 1.2x 5-day avg
+
+    Active window: 09:30 AM – 10:30 AM
+    Loss bucket:   morning
     """
 
+    name          = "morning_breakout"
+    active_window = (time(9, 30), time(10, 30))
+    loss_bucket   = "morning"
+    sl_pct        = 0.008    # 0.8% stop loss per Blueprint v8
+    target_pct    = 0.015    # 1.5% target per Blueprint v8
+
     def __init__(self, engine, symbol: str, sentiment_score: float = 0.0):
-        self.engine          = engine
-        self.symbol          = symbol
-        self.sentiment_score = sentiment_score
-        self.strategy_name   = "MorningBreakout"
+        super().__init__(engine, symbol, sentiment_score)
+        self.strategy_name = "MorningBreakout"   # backward compat for SignalEvent
 
         # Reference candle (09:15–09:30)
         self.ref_high   = None
@@ -64,7 +72,7 @@ class MorningBreakout:
                            highs: np.ndarray,
                            lows: np.ndarray,
                            ltp: float) -> bool:
-        """ATR(14) must be > 0.5% of current price."""
+        """ATR(14) must be > 0.3% of current price."""
         if len(closes) < ATR_PERIOD + 1:
             logger.debug(f"  ATR SKIP: not enough candles ({len(closes)} < {ATR_PERIOD + 1})")
             return False
@@ -76,7 +84,7 @@ class MorningBreakout:
         return passes
 
     def _check_volume_filter(self, volumes: np.ndarray) -> bool:
-        """Current volume must be > 1.5x 5-day average."""
+        """Current volume must be > 1.2x 5-day average."""
         if len(volumes) < 6:
             logger.debug(f"  VOL SKIP: not enough candles ({len(volumes)} < 6)")
             return False
@@ -88,7 +96,7 @@ class MorningBreakout:
         logger.debug(f"  VOL: {current_vol} vs avg {avg_volume:.0f} x{VOLUME_MULT} = {avg_volume*VOLUME_MULT:.0f} — {'PASS' if passes else 'FAIL'}")
         return passes
 
-    def on_tick(self, event: MarketEvent):
+    def on_tick(self, event: MarketEvent) -> None:
         """
         Called on every MarketEvent for this symbol.
         Builds candle history and evaluates breakout conditions.
@@ -156,7 +164,7 @@ class MorningBreakout:
             logger.info(f"  🚀 SIGNAL: {direction} {self.symbol} @ {ltp:.2f} "
                        f"[Breakout above {self.ref_high:.2f}]")
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset for new trading day."""
         self.ref_high     = None
         self.ref_low      = None
@@ -167,7 +175,7 @@ class MorningBreakout:
 
 if __name__ == "__main__":
     import random
-    import time
+    import time as time_module
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s — %(message)s")
 
@@ -187,16 +195,18 @@ if __name__ == "__main__":
     strategy = MorningBreakout(engine, "INFY", sentiment_score=-0.963)
 
     print("── MorningBreakout Backtest Simulation ──\n")
+    print(f"Strategy: {strategy}")
+    print(f"  active_window: {strategy.active_window}")
+    print(f"  loss_bucket:   {strategy.loss_bucket}\n")
 
-    # Phase 1: Build 30 pre-reference candles with realistic variance
-    # This gives ATR(14) enough data to compute
+    # Phase 1: Build 30 pre-reference candles
     print("Phase 1: Building pre-reference history (30 candles)...")
     base = 1850.0
     for i in range(30):
         noise = random.uniform(-8, 8)
         ltp   = base + noise
         hour   = 9
-        minute = 15 + (i % 14)   # Stays within 09:15–09:29
+        minute = 15 + (i % 14)
         tick = MarketEvent(
             timestamp = datetime(2026, 4, 22, hour, minute, 0),
             symbol    = "INFY",
@@ -223,14 +233,12 @@ if __name__ == "__main__":
     strategy.on_tick(ref_tick)
     print(f"  Reference High: {strategy.ref_high:.2f}  Low: {strategy.ref_low:.2f}")
 
-    # Phase 3: Breakout ticks — price rises above ref_high with high volume
+    # Phase 3: Breakout ticks
     print("Phase 3: Simulating breakout above reference high...")
-    breakout_target = strategy.ref_high + 5.0  # Clearly above ref_high
     for i in range(20):
         ltp  = base + (i * 1.5)
         hour   = 9 + (32 + i) // 60
         minute = (32 + i) % 60
-        # First candles normal volume, breakout candle spikes
         vol = 300000 if ltp > strategy.ref_high else random.randint(40000, 80000)
         tick = MarketEvent(
             timestamp = datetime(2026, 4, 22, hour, minute, 0),
@@ -247,7 +255,7 @@ if __name__ == "__main__":
         if signals:
             break
 
-    time.sleep(0.5)
+    time_module.sleep(0.5)
     engine.stop()
 
     print(f"\n── Results ──")
@@ -257,9 +265,7 @@ if __name__ == "__main__":
     if signals:
         s = signals[0]
         print(f"  Direction      : {s.direction}")
-        print(f"  Symbol         : {s.symbol}")
         print(f"  LTP at signal  : {s.ltp:.2f}")
-        print(f"\n✅ MorningBreakout strategy working.")
+        print(f"\n✅ MorningBreakout v8 (inherits Strategy ABC) working.")
     else:
-        print(f"\n⚠️  No signal — price may not have crossed ref_high in simulation.")
-        print(f"   Final LTP: {base + 19*1.5:.2f} vs ref_high: {strategy.ref_high:.2f}")
+        print(f"\n⚠️  No signal — price may not have crossed ref_high.")
