@@ -185,6 +185,23 @@ SECTOR_MAP = {
     "SCHAEFFLER": "NIFTY AUTO",
     "RAIN":       "NIFTY METAL",
     "GOCLCORP":   "NIFTY ENERGY",
+    "SANOFI":     "NIFTY PHARMA",
+    "SCHAEFFLER": "NIFTY AUTO",
+    "RAIN":       "NIFTY METAL",
+    "GOCLCORP":   "NIFTY ENERGY",
+    # Defence stocks
+    "HAL":        "NIFTY INDIA DEFENCE",
+    "BEL":        "NIFTY INDIA DEFENCE",
+    "BDL":        "NIFTY INDIA DEFENCE",
+    "MAZDOCK":    "NIFTY INDIA DEFENCE",
+    "COCHINSHIP": "NIFTY INDIA DEFENCE",
+    "GRSE":       "NIFTY INDIA DEFENCE",
+    "ZENTEC":     "NIFTY INDIA DEFENCE",
+    "DCXINDIA":   "NIFTY INDIA DEFENCE",
+    # EV stocks
+    "TMCV":       "NIFTY EV",
+    "OLECTRA":    "NIFTY EV",
+    "GREENPANEL": "NIFTY EV",
 }
 
 MAX_WATCHLIST       = 10   # Scan top 10 tickers

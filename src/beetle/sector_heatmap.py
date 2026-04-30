@@ -21,6 +21,9 @@ SECTOR_INDICES = {
     "NIFTY CONSUMER DURABLES":  "NSE:NIFTY CONSR DURBL",
     "NIFTY HEALTHCARE":         "NSE:NIFTY HEALTHCARE",
     "NIFTY PSU BANK":           "NSE:NIFTY PSU BANK",
+    # ── NEW ──
+    "NIFTY INDIA DEFENCE":      "NSE:NIFTY IND DEFENCE",
+    "NIFTY EV":                 "NSE:NIFTY EV",
 }
 
 # Bias thresholds per Blueprint
@@ -55,6 +58,8 @@ def _mock_heatmap() -> dict:
         "NIFTY CONSUMER DURABLES": +0.28,
         "NIFTY HEALTHCARE":        +0.19,
         "NIFTY PSU BANK":          +0.67,
+        "NIFTY INDIA DEFENCE":     +0.45,
+        "NIFTY EV":                +0.22,
     }
     result = {}
     for sector, change_pct in mock_data.items():

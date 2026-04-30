@@ -1,22 +1,22 @@
-import feedparser
+# save as test_indices2.py
+from kiteconnect import KiteConnect
+from dotenv import load_dotenv
+import os
 
-feeds = [
-    "https://www.livemint.com/rss/markets",
-    "https://www.livemint.com/rss/companies",
-    "https://www.livemint.com/rss/news",
-    "https://www.thehindu.com/business/markets/feeder/default.rss",
-    "https://feeds.feedburner.com/ndtvprofit-latest",
-    "https://www.financialexpress.com/market/feed/",
-]
+load_dotenv("config/.env")
 
-for url in feeds:
-    feed = feedparser.parse(url)
-    print(f"\n{url}")
-    print(f"  Entries: {len(feed.entries)}")
-    if feed.entries:
-        title = feed.entries[0].get("title", "")[:60]
-        date  = feed.entries[0].get("published", "no date")
-        print(f"  Latest: {title}")
-        print(f"  Date:   {date}")
-    else:
-        print("  No entries found")
+kite = KiteConnect(api_key=os.getenv("API_KEY"))
+kite.set_access_token(os.getenv("ACCESS_TOKEN"))
+
+targets = ["NIFTY IND DEFENCE", "NIFTY EV"]
+
+instruments = kite.instruments("NSE")
+for target in targets:
+    matches = [i for i in instruments 
+               if i["tradingsymbol"] == target]
+    for m in matches:
+        print(f"Symbol: {m['tradingsymbol']}")
+        print(f"Name:   {m['name']}")
+        print(f"Token:  {m['instrument_token']}")
+        print(f"Exch:   {m['exchange']}")
+        print()
