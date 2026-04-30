@@ -25,8 +25,12 @@ from src.core.execution   import ExecutionHandler
 from src.notifications.telegram_bot import TelegramNotifier
 
 # ── Strategy imports ─────────────────────────────────────────────────
-from src.strategies.breakout     import MorningBreakout
-from src.strategies.rsi_momentum import RSIMomentum
+from src.strategies.breakout         import MorningBreakout
+from src.strategies.rsi_momentum     import RSIMomentum
+from src.strategies.sector_pullback  import SectorLeaderPullback
+from src.strategies.vol_breakout     import VolatilityContractionBreakout
+from src.strategies.vol_spike        import VolumeSpikeWithSentiment
+from src.core.strategy_registry      import StrategyRegistry
 
 # ── Intelligence imports ──────────────────────────────────────────────
 from src.beetle.instrument_master import load_instruments
@@ -83,6 +87,26 @@ IS_PAPER_TRADING = os.getenv("IS_PAPER_TRADING", "True") == "True"
 
 MIN_ACTIVE_CANDIDATES = 3    # Trigger refresh if below this
 MAX_SUBSCRIPTIONS     = 10   # Never subscribe more than this
+
+# ── v8 Phase 5 Staged Rollout ────────────────────────────────────────
+# Edit this list to control which strategies are active.
+# Stage 5a — start here:  ["morning_breakout", "rsi_momentum"]
+# Stage 5b — add S3:      + "sector_pullback"
+# Stage 5c — add S5:      + "vol_spike_sentiment"
+# Stage 5d — all 5:       + "vol_contraction"
+ENABLED_STRATEGIES = [
+    "morning_breakout",
+    "rsi_momentum",
+]
+
+# Strategy class registry — keyed by strategy.name
+STRATEGY_CLASSES = {
+    "morning_breakout":    MorningBreakout,
+    "rsi_momentum":        RSIMomentum,
+    "sector_pullback":     SectorLeaderPullback,
+    "vol_contraction":     VolatilityContractionBreakout,
+    "vol_spike_sentiment": VolumeSpikeWithSentiment,
+}
 
 
 def load_watchlist() -> list:
@@ -175,7 +199,7 @@ def start_heatmap_refresher(interval_seconds: int = 300):
     return t
 
 def start_dynamic_universe(engine, data_handler, instruments,
-                            strategies, watchlist, notifier,
+                            registry, watchlist, notifier,
                             sector_cache, sector_cache_lock, db):
     """
     Background thread — monitors active candidates.
@@ -183,12 +207,10 @@ def start_dynamic_universe(engine, data_handler, instruments,
     re-runs pipeline and subscribes fresh tickers.
     """
     from src.beetle.intelligence import run_pipeline_fresh
-    from src.strategies.breakout import MorningBreakout
-    from src.strategies.rsi_momentum import RSIMomentum
 
     subscribed_symbols = [t["symbol"] for t in watchlist]
     total_subscribed   = len(subscribed_symbols)
-    db_ref             = db   # Reference for use inside thread
+    db_ref             = db
 
     def _monitor():
         nonlocal subscribed_symbols, total_subscribed
@@ -266,15 +288,14 @@ def start_dynamic_universe(engine, data_handler, instruments,
                             data_handler.ticker.MODE_FULL, new_tokens
                         )
 
-                    # Add strategies
-                    strategies[symbol] = {
-                        "breakout": MorningBreakout(
-                            engine, symbol, t.get("sentiment_score", 0.0)
-                        ),
-                        "rsi": RSIMomentum(
-                            engine, symbol, t.get("sentiment_score", 0.0)
-                        )
-                    }
+                    # Add strategies via registry — respects ENABLED_STRATEGIES
+                    sentiment = t.get("sentiment_score", 0.0)
+                    for strat_name in ENABLED_STRATEGIES:
+                        if strat_name not in STRATEGY_CLASSES:
+                            continue
+                        cls = STRATEGY_CLASSES[strat_name]
+                        new_strategy = cls(engine, symbol, sentiment)
+                        registry.register(new_strategy)
 
                     subscribed_symbols.append(symbol)
                     total_subscribed += 1
@@ -307,6 +328,7 @@ def main():
     logger.info("  MORNING BEETLE ENGINE — STARTING")
     logger.info(f"  Mode: {'PAPER TRADING' if IS_PAPER_TRADING else '⚠️  LIVE TRADING'}")
     logger.info(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"  Strategies enabled: {ENABLED_STRATEGIES}")
     logger.info("=" * 60)
 
      # ── Engine lock — prevent duplicate instances ─────────────────
@@ -345,7 +367,8 @@ def main():
     cleanup_stale_trades(db)
     risk      = RiskManager(engine=engine, trade_db=db)
     risk.set_sector_cache(sector_cache, sector_cache_lock)
-    exits     = ExitManager(engine=engine, trade_db=db, notifier=notifier)
+    exits     = ExitManager(engine=engine, trade_db=db,
+                            notifier=notifier, risk_manager=risk)
     execution = ExecutionHandler(engine=engine, trade_db=db,
                                  is_paper_trading=IS_PAPER_TRADING)
     
@@ -358,53 +381,95 @@ def main():
     data_handler = DataHandler(engine=engine, instrument_map=instruments)
     data_handler.subscribe(symbols)
 
-    # ── Step 4: Initialise strategies for each symbol ─────────────────
-    strategies = {}
+    # ── Step 4: Initialise strategies via StrategyRegistry ────────────
+    registry = StrategyRegistry()
     for symbol in symbols:
         sentiment = sentiment_map.get(symbol, 0.0)
-        strategies[symbol] = {
-            "breakout": MorningBreakout(engine, symbol, sentiment),
-            "rsi":      RSIMomentum(engine, symbol, sentiment)
-        }
+        for strat_name in ENABLED_STRATEGIES:
+            if strat_name not in STRATEGY_CLASSES:
+                logger.warning(f"  Unknown strategy in ENABLED_STRATEGIES: {strat_name}")
+                continue
+            cls = STRATEGY_CLASSES[strat_name]
+            strategy = cls(engine, symbol, sentiment)
+            registry.register(strategy)
+
         logger.info(f"  Strategies initialised for {symbol} "
-                   f"(sentiment={sentiment:+.3f})")
+                   f"(sentiment={sentiment:+.3f}) — "
+                   f"{len(ENABLED_STRATEGIES)} strategies")
+
+    logger.info(f"  Registry total: {len(registry.all_strategies())} "
+               f"strategies across {len(symbols)} symbols")
 
     # ── Step 5: Register EventBus handlers ───────────────────────────
+    # Map signal events to their originating strategy (for risk + exit profiles)
+    signal_to_strategy = {}   # signal_id -> Strategy object
+
     def on_market_event(event: MarketEvent):
-        """Route ticks to strategies and exit manager."""
-        symbol = event.symbol
-        if symbol in strategies:
-            strategies[symbol]["breakout"].on_tick(event)
-            strategies[symbol]["rsi"].on_tick(event)
+        """Route ticks via StrategyRegistry (active-window filtered)."""
+        registry.dispatch(event)
         exits.on_tick(event)
 
+    def on_signal(event: SignalEvent):
+        """
+        Route signal to RiskManager with originating strategy.
+        Lookup strategy by (symbol, name) — strategy_name in SignalEvent
+        may differ from strategy.name due to legacy code.
+        """
+        # Find originating strategy
+        matched_strategy = None
+        for s in registry.all_strategies():
+            if s.symbol != event.symbol:
+                continue
+            if s.name == event.strategy_name or \
+               getattr(s, "strategy_name", None) == event.strategy_name:
+                matched_strategy = s
+                break
+
+        # Track for fill handler
+        signal_id = (event.symbol, event.timestamp)
+        if matched_strategy:
+            signal_to_strategy[signal_id] = matched_strategy
+
+        # Validate with strategy context
+        risk.validate(event, strategy=matched_strategy)
+
     def on_fill_event(event: FillEvent):
-        """Register new position with ExitManager."""
+        """Register new position with ExitManager using strategy profile."""
+        # Find the most recent strategy for this symbol
+        matched_strategy = None
+        for sig_id, s in signal_to_strategy.items():
+            if sig_id[0] == event.symbol:
+                matched_strategy = s
+
         exits.add_position(
             trade_id    = event.trade_id,
             symbol      = event.symbol,
             direction   = event.direction,
             entry_price = event.fill_price,
-            quantity    = event.quantity
+            quantity    = event.quantity,
+            strategy    = matched_strategy   # v8 — per-strategy exit profile
         )
         logger.info(f"  Position registered with ExitManager: "
-                   f"{event.direction} {event.symbol} @ {event.fill_price}")
-        
+                   f"{event.direction} {event.symbol} @ {event.fill_price} "
+                   f"[{matched_strategy.name if matched_strategy else 'default'}]")
+
         # Telegram trade alert
         if notifier:
+            sentiment = matched_strategy.sentiment_score if matched_strategy else 0.0
+            strategy_name = matched_strategy.name if matched_strategy else "Engine"
             notifier.send_trade_alert(
                 direction  = event.direction,
                 symbol     = event.symbol,
                 price      = event.fill_price,
                 quantity   = event.quantity,
-                strategy   = "Engine",
-                sentiment  = 0.0,
+                strategy   = strategy_name,
+                sentiment  = sentiment,
                 sector     = "—",
                 is_paper   = IS_PAPER_TRADING
             )
 
     engine.register_handler("MARKET", on_market_event)
-    engine.register_handler("SIGNAL", risk.on_signal)
+    engine.register_handler("SIGNAL", on_signal)
     engine.register_handler("ORDER",  execution.on_order)
     engine.register_handler("FILL",   on_fill_event)
 
@@ -417,7 +482,7 @@ def main():
     # ── Step 6c: Start dynamic universe monitor ───────────────────────
     start_dynamic_universe(
         engine, data_handler, instruments,
-        strategies, watchlist, notifier,
+        registry, watchlist, notifier,
         sector_cache, sector_cache_lock, db
     )
 
