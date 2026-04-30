@@ -8,11 +8,14 @@ from src.core.events import SignalEvent, OrderEvent
 load_dotenv("config/.env")
 logger = logging.getLogger(__name__)
 
-# Risk parameters per Blueprint
-DAILY_LOSS_LIMIT  = -2000.0   # ₹2,000 max daily loss
-ENTRY_CUTOFF      = time(10, 30)   # No new positions after 10:30 AM
-COOLDOWN_SECONDS  = 1.0            # Min 1s between consecutive orders
-MAX_SIMULTANEOUS_POSITIONS = 3   # Never more than 3 open at once
+# Risk parameters per Blueprint v8
+DAILY_LOSS_MORNING    = -1200.0  # ₹1,200 morning bucket (09:15–10:30)
+DAILY_LOSS_POST       = -800.0   # ₹800 post-morning bucket (10:30–14:45)
+DAILY_LOSS_LIMIT      = -2000.0  # ₹2,000 total — STOP_ALL both buckets
+NO_ENTRY_CUTOFF       = time(14, 45)  # Hard no-entry after 14:45
+COOLDOWN_SECONDS      = 1.0           # Min 1s between consecutive orders
+MAX_SIMULTANEOUS_POSITIONS = 3        # Never more than 3 open at once
+MAX_TRADES_PER_DAY    = 5             # Max 5 trades/day across all strategies
 
 CAPITAL_PER_TRADE_PCT = 0.30   # 30% of capital per trade
 
@@ -20,17 +23,25 @@ CAPITAL_PER_TRADE_PCT = 0.30   # 30% of capital per trade
 SENTIMENT_BLOCK_BULL = 0.4    # Block SELL if FinBERT > +0.4
 SENTIMENT_BLOCK_BEAR = -0.4   # Block BUY  if FinBERT < -0.4
 
+# Bucket name constants
+BUCKET_MORNING     = "morning"
+BUCKET_POST        = "post_morning"
+
 
 class RiskManager:
     """
     Validates every SignalEvent before allowing order placement.
 
-    Checks (in order):
-    1. Daily loss limit not breached
-    2. No duplicate open position in same ticker
-    3. Current time < 10:30 AM entry cutoff
-    4. 1 second cooldown between orders
-    5. Sentiment gate — signal must align with FinBERT bias
+    v8 Checks (in order):
+    1. Daily loss limit not breached (total ₹2,000)
+    2. Bucket loss limit not breached (₹1,200 morning / ₹800 post)
+    3. Daily trade cap not reached (5 trades/day)
+    4. No duplicate open position in same ticker
+    5. Max simultaneous positions not reached
+    6. Current time < 14:45 hard cutoff + strategy active window
+    7. 1 second cooldown between orders
+    8. Sentiment gate — signal must align with FinBERT bias
+    9. Live sector alignment check
 
     Returns APPROVED or BLOCKED with reason.
     """
@@ -41,6 +52,13 @@ class RiskManager:
         self._lock       = threading.Lock()
         self._last_order_time = None
         self._bypass_time_gate = False
+
+        # v8 — bucket-split loss tracking
+        self._morning_loss    = 0.0
+        self._post_loss       = 0.0
+        self._morning_halted  = False
+        self._post_halted     = False
+        self._trades_today    = self._count_trades_today()
 
         # Check if STOP_ALL was active from a previous session today
         self.stop_all = self._check_stop_all_persisted()
@@ -61,8 +79,21 @@ class RiskManager:
             ).first()
             return stop_event is not None
 
+    def _count_trades_today(self) -> int:
+        """Count trades placed today from DB."""
+        from sqlalchemy.orm import Session
+        from src.core.trade_db import Trade
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        with Session(self.trade_db.engine) as session:
+            return session.query(Trade).filter(
+                Trade.entry_time >= today
+            ).count()
+
     def _check_daily_loss(self) -> tuple[bool, str]:
-        """Block if daily P&L < -₹2,000."""
+        """
+        v8 bucket-split loss check.
+        Morning bucket: ₹1,200 | Post-morning: ₹800 | Total: ₹2,000
+        """
         if self.stop_all:
             return False, "STOP_ALL active — daily loss limit previously breached"
         daily_pnl = self.trade_db.get_daily_pnl()
@@ -74,6 +105,23 @@ class RiskManager:
                 f"Daily loss limit breached: ₹{daily_pnl:.2f}"
             )
             return False, f"Daily loss limit breached: ₹{daily_pnl:.2f}"
+        return True, ""
+
+    def _check_bucket_loss(self, bucket: str) -> tuple[bool, str]:
+        """
+        Check if specific loss bucket is exhausted.
+        Called with strategy.loss_bucket value.
+        """
+        if bucket == BUCKET_MORNING and self._morning_halted:
+            return False, "Morning bucket exhausted (₹1,200 limit)"
+        if bucket == BUCKET_POST and self._post_halted:
+            return False, "Post-morning bucket exhausted (₹800 limit)"
+        return True, ""
+
+    def _check_trade_cap(self) -> tuple[bool, str]:
+        """Block if daily trade cap (5) reached."""
+        if self._trades_today >= MAX_TRADES_PER_DAY:
+            return False, f"Daily trade cap hit: {self._trades_today}/{MAX_TRADES_PER_DAY}"
         return True, ""
     
     def _check_max_positions(self) -> tuple[bool, str]:
@@ -91,13 +139,21 @@ class RiskManager:
                 return False, f"Duplicate position: {symbol} already open"
         return True, ""
 
-    def _check_time_gate(self) -> tuple[bool, str]:
-        """Block new entries after 10:30 AM."""
+    def _check_time_gate(self, strategy=None) -> tuple[bool, str]:
+        """
+        v8: Hard no-entry cutoff at 14:45.
+        If strategy provided, also checks strategy.is_active().
+        Replaces v7 hardcoded 10:30 cutoff.
+        """
         if self._bypass_time_gate:
             return True, ""
-        now = datetime.now().time()
-        if now >= ENTRY_CUTOFF:
-            return False, f"Time gate: past entry cutoff {ENTRY_CUTOFF}"
+        now = datetime.now()
+        # Hard cutoff — no entries after 14:45 regardless of strategy
+        if now.time() >= NO_ENTRY_CUTOFF:
+            return False, f"Hard no-entry cutoff: past 14:45"
+        # Strategy active window check
+        if strategy is not None and not strategy.is_active(now):
+            return False, f"Strategy {strategy.name} inactive at {now.strftime('%H:%M')}"
         return True, ""
 
     def _check_cooldown(self) -> tuple[bool, str]:
@@ -169,17 +225,25 @@ class RiskManager:
         qty = int(capital_per_trade / ltp)
         return max(1, qty)
 
-    def validate(self, signal: SignalEvent) -> tuple[bool, str]:
+    def validate(self, signal: SignalEvent,
+                 strategy=None) -> tuple[bool, str]:
         """
         Run all risk checks on a SignalEvent.
+        v8: accepts optional strategy for active_window + bucket checks.
         Returns (approved: bool, reason: str)
         """
         with self._lock:
+            # Determine bucket from strategy if provided
+            bucket = getattr(strategy, "loss_bucket",
+                             BUCKET_MORNING)
+
             checks = [
                 self._check_daily_loss(),
+                self._check_bucket_loss(bucket),
+                self._check_trade_cap(),
                 self._check_max_positions(),
                 self._check_duplicate_position(signal.symbol),
-                self._check_time_gate(),
+                self._check_time_gate(strategy),
                 self._check_cooldown(),
                 self._check_sentiment_gate(signal),
                 self._check_sector_alignment(signal, signal.symbol),
@@ -213,6 +277,8 @@ class RiskManager:
             )
 
             self._last_order_time = datetime.now()
+            self._trades_today   += 1
+
             self.trade_db.log_signal(
                 symbol=signal.symbol,
                 direction=signal.direction,
@@ -223,9 +289,35 @@ class RiskManager:
             )
 
             logger.info(f"  ✅ APPROVED {signal.direction} {signal.symbol} "
-                       f"@ {limit_price} x{quantity}")
+                       f"@ {limit_price} x{quantity} "
+                       f"[trades today: {self._trades_today}/{MAX_TRADES_PER_DAY}]")
             self.engine.emit_event(order)
             return True, "APPROVED"
+
+    def update_bucket_loss(self, bucket: str, pnl: float):
+        """
+        Called by ExitManager when a trade closes.
+        Updates bucket loss counters and halts bucket if limit hit.
+        """
+        with self._lock:
+            if bucket == BUCKET_MORNING:
+                self._morning_loss += pnl
+                if self._morning_loss <= DAILY_LOSS_MORNING:
+                    self._morning_halted = True
+                    logger.warning(f"🛑 Morning bucket halted — P&L: ₹{self._morning_loss:.2f}")
+                    self.trade_db.log_system(
+                        "WARNING", "MORNING_BUCKET_HALT",
+                        f"Morning bucket loss ₹{self._morning_loss:.2f} ≤ ₹{DAILY_LOSS_MORNING:.2f}"
+                    )
+            elif bucket == BUCKET_POST:
+                self._post_loss += pnl
+                if self._post_loss <= DAILY_LOSS_POST:
+                    self._post_halted = True
+                    logger.warning(f"🛑 Post-morning bucket halted — P&L: ₹{self._post_loss:.2f}")
+                    self.trade_db.log_system(
+                        "WARNING", "POST_BUCKET_HALT",
+                        f"Post bucket loss ₹{self._post_loss:.2f} ≤ ₹{DAILY_LOSS_POST:.2f}"
+                    )
 
     def on_signal(self, event: SignalEvent):
         """EventBus handler — called on every SignalEvent."""
