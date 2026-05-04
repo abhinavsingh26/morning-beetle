@@ -1,10 +1,13 @@
 import os
 import logging
 import asyncio
+import threading
+import queue
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Bot
 from telegram.error import TelegramError
+from telegram.request import HTTPXRequest
 
 load_dotenv("config/.env")
 logger = logging.getLogger(__name__)
@@ -13,10 +16,17 @@ logger = logging.getLogger(__name__)
 class TelegramNotifier:
     """
     Async Telegram bot for Morning Beetle alerts.
+
+    v2 Architecture (fixes pool timeout + event loop errors):
+    - Single persistent asyncio event loop on a dedicated background thread
+    - Thread-safe message queue — any thread can call send()
+    - HTTPX connection pool sized for burst traffic (10 connections)
+    - 30s timeouts to avoid pool starvation on slow Telegram responses
+
     3 message templates per Blueprint:
-    1. Pre-Market Report  — sent at 09:14 AM
-    2. Trade Alert        — sent on every order
-    3. EOD Summary        — sent at 15:30 PM
+    1. Pre-Market Report  — 09:14 AM
+    2. Trade Alert        — every order
+    3. EOD Summary        — 15:30 PM
     """
 
     def __init__(self):
@@ -24,13 +34,42 @@ class TelegramNotifier:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
         if not self.token or not self.chat_id:
-            raise ValueError("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from .env")
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing from .env"
+            )
 
-        self.bot = Bot(token=self.token)
+        # Configure HTTPX with a larger pool to handle burst alerts
+        request = HTTPXRequest(
+            connection_pool_size = 10,
+            pool_timeout         = 10.0,
+            connect_timeout      = 10.0,
+            read_timeout         = 30.0,
+            write_timeout        = 30.0,
+        )
+        self.bot = Bot(token=self.token, request=request)
+
+        # Dedicated event loop on a background thread
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            daemon=True,
+            name="TelegramLoop"
+        )
+        self._thread.start()
+        self._shutdown = False
+
         logger.info("TelegramNotifier initialised.")
 
-    async def _send(self, message: str):
-        """Send a message. Handles errors gracefully."""
+    def _run_loop(self):
+        """Run asyncio loop forever in background thread."""
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_forever()
+        except Exception as e:
+            logger.error(f"Telegram loop crashed: {e}")
+
+    async def _send_async(self, message: str):
+        """Async send — runs on dedicated loop."""
         try:
             await self.bot.send_message(
                 chat_id    = self.chat_id,
@@ -40,17 +79,33 @@ class TelegramNotifier:
             logger.info(f"Telegram sent: {message[:60]}...")
         except TelegramError as e:
             logger.error(f"Telegram error: {e}")
+        except Exception as e:
+            logger.error(f"Telegram unexpected error: {e}")
 
     def send(self, message: str):
-        """Synchronous wrapper — safe to call from any thread."""
+        """
+        Thread-safe send. Schedules message on the dedicated loop.
+        Returns immediately — does not block caller.
+        """
+        if self._shutdown:
+            logger.warning("Telegram shutting down — message dropped.")
+            return
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(self._send(message))
-            else:
-                loop.run_until_complete(self._send(message))
-        except RuntimeError:
-            asyncio.run(self._send(message))
+            asyncio.run_coroutine_threadsafe(
+                self._send_async(message),
+                self._loop
+            )
+        except Exception as e:
+            logger.error(f"Failed to schedule Telegram message: {e}")
+
+    def shutdown(self):
+        """Stop the background loop on engine shutdown."""
+        self._shutdown = True
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join(timeout=2.0)
+        except Exception as e:
+            logger.warning(f"Telegram shutdown error: {e}")
 
     # ── Message Templates ─────────────────────────────────────────────
 
@@ -169,12 +224,13 @@ class TelegramNotifier:
 
 
 if __name__ == "__main__":
+    import time
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s — %(message)s")
 
     notifier = TelegramNotifier()
 
-    print("Sending 3 test messages to Telegram...\n")
+    print("Sending burst of 6 test messages to Telegram...\n")
 
     # Test 1 — Pre-Market Report
     mock_watchlist = [
@@ -196,27 +252,28 @@ if __name__ == "__main__":
         }
     ]
     notifier.send_premarket_report(mock_watchlist, is_paper=True)
-    print("✅ Pre-Market Report sent")
+    print("✅ Pre-Market Report queued")
 
-    import time
-    time.sleep(1)
+    # Test 2 — Burst of trade alerts (this is what failed yesterday)
+    for i, sym in enumerate(["NETWEB", "ASIANENE", "HAL", "BEL"]):
+        notifier.send_trade_alert(
+            direction="BUY", symbol=sym,
+            price=1000.0 + i*100, quantity=5,
+            strategy="RSIMomentum", sentiment=+0.85,
+            sector="NIFTY IT", is_paper=True
+        )
+        print(f"✅ Trade alert queued: {sym}")
 
-    # Test 2 — Trade Alert
-    notifier.send_trade_alert(
-        direction="BUY", symbol="PERSISTENT",
-        price=5073.14, quantity=9,
-        strategy="RSIMomentum", sentiment=+0.946,
-        sector="NIFTY IT", is_paper=True
+    # Test 3 — Exit alert
+    notifier.send_exit_alert(
+        symbol="NETWEB", exit_price=1050.0,
+        reason="TRAIL", pnl=140.13, is_paper=True
     )
-    print("✅ Trade Alert sent")
+    print("✅ Exit alert queued")
 
-    time.sleep(1)
+    # Wait for background thread to flush all messages
+    print("\nWaiting 10s for delivery...")
+    time.sleep(10)
 
-    # Test 3 — EOD Summary
-    from src.core.trade_db import TradeDB
-    db = TradeDB()
-    trades = db.get_open_trades()
-    notifier.send_eod_summary(trades, daily_pnl=-4264.0, is_paper=True)
-    print("✅ EOD Summary sent")
-
-    print("\nCheck your Telegram — 3 messages should have arrived.")
+    notifier.shutdown()
+    print("\n✅ All 6 messages should have arrived in Telegram.")

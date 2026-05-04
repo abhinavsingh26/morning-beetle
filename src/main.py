@@ -545,6 +545,8 @@ def main():
         # ── Shutdown ─────────────────────────────────────────────────
         data_handler.stop()
         engine.stop()
+        if notifier:                    # ← add these 2 lines
+            notifier.shutdown()
         release_lock()
 
         # Final P&L
