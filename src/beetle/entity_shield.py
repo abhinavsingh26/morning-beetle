@@ -20,6 +20,12 @@ DEAD_ZONE_MAX = +0.1
 # Fuzzy match threshold
 MATCH_THRESHOLD = 85
 
+# Tickers ≤ this length are considered "short" — they require either
+# an exact word-boundary match or an explicit alias/context word.
+# Prevents short tickers like SPIC matching "SpiceJet", FACT matching
+# "Factory", HAL matching "Halt", BEL matching "Bell", etc.
+SHORT_TICKER_LEN = 4
+
 # Known aliases — longer aliases checked first (sort by length)
 KNOWN_ALIASES = {
     # ── DISAMBIGUATION (specific phrases checked before generic) ──
@@ -83,16 +89,22 @@ KNOWN_ALIASES = {
     "ONGC":              "ONGC",
     "NTPC":              "NTPC",
     # ── Auto ─────────────────────────────────────────────────────
-    "HERO MOTO": "HEROMOTOCO",
-    "MAHINDRA":  "M&M",
-    "MARUTI":    "MARUTI",
-    "EICHER":    "EICHERMOT",
+    "HERO MOTO":     "HEROMOTOCO",
+    "MAHINDRA":      "M&M",
+    "MARUTI":        "MARUTI",
+    "EICHER":        "EICHERMOT",
+    "ASHOK LEYLAND": "ASHOKLEY",
+    "ATHER ENERGY":  "ATHERENERG",
     # ── FMCG ─────────────────────────────────────────────────────
-    "NESTLE":       "NESTLEIND",
-    "NESTLÉ":       "NESTLEIND",
-    "ASIAN PAINTS": "ASIANPAINT",
-    "HUL":          "HINDUNILVR",
-    "AIRTEL":       "BHARTIARTL",
+    "NESTLE":             "NESTLEIND",
+    "NESTLÉ":             "NESTLEIND",
+    "ASIAN PAINTS":       "ASIANPAINT",
+    "HUL":                "HINDUNILVR",
+    "AIRTEL":             "BHARTIARTL",
+    "GODREJ INDUSTRIES":  "GODREJIND",
+    "GODREJ AGROVET":     "GODREJAGRO",
+    "GODREJ CONSUMER":    "GODREJCP",
+    "GODREJ PROPERTIES":  "GODREJPROP",
     # ── Metal ────────────────────────────────────────────────────
     "JSW STEEL":  "JSWSTEEL",
     "HINDALCO":   "HINDALCO",
@@ -102,14 +114,19 @@ KNOWN_ALIASES = {
     "COAL INDIA": "COALINDIA",
     "COALINDIA":  "COALINDIA",
     # ── Defence ──────────────────────────────────────────────────
-    "MAZAGON DOCK":    "MAZDOCK",
-    "COCHIN SHIPYARD": "COCHINSHIP",
-    "GARDEN REACH":    "GRSE",
-    "MAZAGON":         "MAZDOCK",
-    "ZEN TECH":        "ZENTEC",
-    "DCX SYSTEMS":     "DCXINDIA",
-    "HAL":             "HAL",
-    "BEL":             "BEL",
+    "MAZAGON DOCK":          "MAZDOCK",
+    "COCHIN SHIPYARD":       "COCHINSHIP",
+    "GARDEN REACH":          "GRSE",
+    "MAZAGON":               "MAZDOCK",
+    "ZEN TECH":              "ZENTEC",
+    "DCX SYSTEMS":           "DCXINDIA",
+    "HAL":                   "HAL",
+    "HINDUSTAN AERONAUTICS": "HAL",
+    "BEL":                   "BEL",
+    # ── Fertilizers / Specific Chemicals ─────────────────────────
+    "SOUTHERN PETROCHEMICAL":      "SPIC",
+    "FERTILIZERS AND CHEMICALS":   "FACT",
+    "FACT KOCHI":                  "FACT",
     # ── New Age ──────────────────────────────────────────────────
     "POLICYBAZAAR":  "POLICYBZR",
     "INDIAN HOTELS": "INDHOTEL",
@@ -119,6 +136,7 @@ KNOWN_ALIASES = {
     "PAYTM":         "PAYTM",
     "NYKAA":         "FSN",
     "IRFC":          "IRFC",
+    "NETWEB":        "NETWEB",
 }
 
 # Generic market terms — skip these, no specific ticker
@@ -130,10 +148,16 @@ GENERIC_TERMS = [
     # Crypto/global noise
     "BITCOIN", "ETHEREUM", "CRYPTO", "CRYPTOCURRENCY",
     "ASIAN STOCKS RISE", "ASIAN STOCKS",
-    # International figures/companies (not Indian market)
+    # International figures/companies
     "BERKSHIRE", "BUFFETT", "GREG ABEL", "WARREN BUFFETT",
     "BERKSHIRE HATHAWAY",
-    # HR/internal corporate noise (not market-moving)
+    # ── NEW v9.1 — US/global market noise ────────────────────────
+    "GAMESTOP", "EBAY", "WALL STREET", "S&P 500", "S&P500",
+    "NASDAQ", "DOW JONES", "DOW",
+    "COGNIZANT",                # US-listed (CTSH)
+    "MIDEAST TENSIONS", "MIDEAST", "MIDDLE EAST",
+    "CHINA FIREWORK", "CHINA EXPLOSION", "XI JINPING",
+    # HR/internal corporate noise
     "RESIGNATION OF", "ASSISTANT VICE PRESIDENT", "HUMAN RESOURCE",
     # Macro/Policy
     "RBI", "SEBI", "FII", "DII", "INFLATION", "GDP",
@@ -143,7 +167,7 @@ GENERIC_TERMS = [
     "BULL MARKET", "BEAR MARKET", "STOCK MARKET",
     "GLOBAL CUES", "CRUDE OIL", "RUPEE", "DOLLAR",
     "VIX", "VOLATILITY INDEX", "FEAR INDEX",
-    # Generic market moves
+    # Generic moves
     "MKTS", "MKT", "BLUECHIP", "BLUE-CHIP", "BLUE CHIP",
     "RALLY", "CORRECTION", "SELL-OFF", "SELLOFF",
     "STIMULUS", "BAILOUT", "ELECTION",
@@ -163,12 +187,16 @@ GENERIC_TERMS = [
     # Macro commentary
     "DEVELOPED NATION", "JEFFREY SACHS", "GROWTH TRAJECTORY",
     "ECONOMIC GROWTH", "GDP GROWTH",
+    # ── NEW v9.1 — generic earnings noise ────────────────────────
+    "INDIA EARNINGS", "MIXED Q4 RESULTS", "WHALESBOOK",
+    "MIXED RESULTS",
 ]
 
-# Tickers with generic-sounding names — require specific context word.
+# Tickers with generic-sounding names — require a specific context word.
 # Prevents M&M matching headlines about Kotak Mahindra,
-# BEL matching headlines about Berkshire's Greg Abel, etc.
+# BEL matching Berkshire's Greg Abel, SPIC matching SpiceJet, etc.
 AMBIGUOUS_TICKERS = {
+    # Existing
     "ASIANENE":   ["ENERGY", "OIL", "GAS", "DRILLING", "ASIAN ENERGY"],
     "M&M":        ["MAHINDRA &", "M&M", "MAHINDRA AUTO",
                    "MAHINDRA SUV", "TRACTORS", "MAHINDRA Q"],
@@ -176,6 +204,23 @@ AMBIGUOUS_TICKERS = {
                    "RADAR", "ELECTRONICS LTD"],
     "RAIN":       ["RAIN INDUSTRIES", "RAIN COMMODITIES"],
     "GOCLCORP":   ["GOCL", "EXPLOSIVES", "DETONATOR"],
+    # ── NEW v9.1 — Day 2 false positives ─────────────────────────
+    "SPIC":       ["SOUTHERN PETROCHEMICAL", "SPIC FERTILIZER",
+                   "SPIC LTD", "SPIC INDIA"],
+    "FACT":       ["FERTILIZERS AND CHEMICALS", "FACT KOCHI",
+                   "TRAVANCORE", "FACT LTD"],
+    "HAL":        ["HINDUSTAN AERONAUTICS", "HAL LTD",
+                   "TEJAS", "FIGHTER JET", "DEFENCE",
+                   "AEROSPACE", "LCA"],
+    "ADANIENT":   ["ADANI ENTERPRISES", "GAUTAM ADANI",
+                   "ADANI GROUP FLAGSHIP", "ADANIENT"],
+    "GODREJIND":  ["GODREJ INDUSTRIES", "GODREJ AGROVET",
+                   "GODREJ CHEMICAL"],   # NOT Godrej Properties (GODREJPROP)
+    "MIDWESTLTD": ["MIDWEST GOLD", "MIDWEST LIMITED",
+                   "MIDWEST INDIA", "MIDWESTLTD"],
+    "ATHERENERG": ["ATHER ENERGY", "ATHER 450", "ATHER SCOOTER",
+                   "ATHERENERG", "ATHER IPO"],
+    "GATECHDVR":  ["GACM TECHNOLOGIES", "GACM", "GATECHDVR"],
 }
 
 
@@ -207,7 +252,6 @@ def _is_ambiguous_match(symbol: str, headline_upper: str) -> bool:
     """
     Return True if symbol is in AMBIGUOUS_TICKERS AND no required
     context word is present in the headline.
-    Used to reject false-positive fuzzy matches.
     """
     context_words = AMBIGUOUS_TICKERS.get(symbol, [])
     if not context_words:
@@ -215,37 +259,68 @@ def _is_ambiguous_match(symbol: str, headline_upper: str) -> bool:
     return not any(word in headline_upper for word in context_words)
 
 
+def _is_short_ticker_substring_only(symbol: str,
+                                     headline_upper: str) -> bool:
+    """
+    Structural guard for short tickers (≤ SHORT_TICKER_LEN chars).
+
+    Short tickers can accidentally match as substrings of unrelated words:
+        SPIC ⊂ "SpiceJet"
+        FACT ⊂ "Factory"
+        HAL  ⊂ "Halt", "Halloween", "Khaleda"
+        BEL  ⊂ "Belief", "Bellatrix"
+        RAIN ⊂ "Rains", "Rainfall"
+
+    A match for a short ticker is only valid if the ticker appears as a
+    standalone WORD in the headline (regex \\bTICKER\\b). Otherwise, this
+    function returns True → match should be rejected.
+
+    Returns True  → reject this match (substring-only, unsafe).
+    Returns False → match is safe (either ticker is long enough OR appears
+                    as a standalone word in headline).
+    """
+    if len(symbol) > SHORT_TICKER_LEN:
+        return False   # long enough — substring match is fine
+
+    # Build word-boundary regex. Escape special chars (e.g. M&M).
+    pattern = r'\b' + re.escape(symbol) + r'\b'
+    if re.search(pattern, headline_upper):
+        return False   # standalone word match — safe
+
+    return True   # short ticker, only matches as substring → reject
+
+
 def find_ticker(headline: str, instruments: dict,
                 threshold: int = MATCH_THRESHOLD) -> dict | None:
     """
-    Match headline to ticker.
-    Step 1: Special case for TATA MOTORS (NSE symbol = TMCV).
-    Step 2: Check known aliases (longest first).
-    Step 3: Filter out generic market headlines.
+    Match headline to ticker through layered defences:
+    Step 1: Special case for TATA MOTORS → TMCV.
+    Step 2: Known aliases (longest first).
+    Step 3: Generic-headline rejection.
     Step 4: Fuzzy match against instrument search anchors.
-    Step 5: Reject ambiguous matches missing required context.
+    Step 5: Short-ticker substring guard.
+    Step 6: Ambiguous-ticker context check.
     """
     headline_upper = headline.upper()
     cleaned = _clean_headline(headline)
 
     # Special case: TATA MOTORS → TMCV
-    if "TATA MOTORS" in headline_upper:
-        if "TMCV" in instruments:
-            boost = _keyword_boost(headline)
-            return {
-                "symbol":     "TMCV",
-                "name":       instruments["TMCV"]["name"],
-                "confidence": round(min(1.0, 0.95 + boost), 3),
-                "raw_score":  100,
-                "boosted":    boost > 0
-            }
+    if "TATA MOTORS" in headline_upper and "TMCV" in instruments:
+        boost = _keyword_boost(headline)
+        return {
+            "symbol":     "TMCV",
+            "name":       instruments["TMCV"]["name"],
+            "confidence": round(min(1.0, 0.95 + boost), 3),
+            "raw_score":  100,
+            "boosted":    boost > 0
+        }
 
     # Step 1 — Known aliases (longest first)
     for alias, sym in sorted(KNOWN_ALIASES.items(),
                               key=lambda x: len(x[0]), reverse=True):
         if alias.upper() in headline_upper:
             if sym in instruments:
-                # Even known aliases get ambiguity check
+                # Aliases also pass through ambiguity check
                 if _is_ambiguous_match(sym, headline_upper):
                     logger.debug(f"  Skipping ambiguous alias '{alias}'→{sym}")
                     continue
@@ -258,7 +333,7 @@ def find_ticker(headline: str, instruments: dict,
                     "boosted":    boost > 0
                 }
 
-    # Step 2 — Skip generic market headlines
+    # Step 2 — Reject generic headlines
     if _is_generic(headline):
         return None
 
@@ -280,14 +355,22 @@ def find_ticker(headline: str, instruments: dict,
     if best_score < threshold:
         return None
 
-    # Step 4 — Ambiguity check
-    if _is_ambiguous_match(best_match["symbol"], headline_upper):
-        logger.debug(f"  Skipping ambiguous fuzzy match: {best_match['symbol']}")
+    matched_symbol = best_match["symbol"]
+
+    # Step 4 — Short-ticker substring guard (NEW v9.1)
+    if _is_short_ticker_substring_only(matched_symbol, headline_upper):
+        logger.debug(f"  Skipping short-ticker substring match: "
+                    f"{matched_symbol} not a standalone word in headline")
+        return None
+
+    # Step 5 — Ambiguous-ticker context check
+    if _is_ambiguous_match(matched_symbol, headline_upper):
+        logger.debug(f"  Skipping ambiguous fuzzy match: {matched_symbol}")
         return None
 
     boost = _keyword_boost(headline)
     return {
-        "symbol":     best_match["symbol"],
+        "symbol":     matched_symbol,
         "name":       best_match["name"],
         "confidence": round(min(1.0, (best_score / 100) + boost), 3),
         "raw_score":  best_score,
@@ -296,10 +379,7 @@ def find_ticker(headline: str, instruments: dict,
 
 
 def filter_headlines(headlines: list, instruments: dict) -> list:
-    """
-    Run EntityShield on a list of headline dicts.
-    Returns filtered list with ticker matches attached.
-    """
+    """Run EntityShield on a list of headline dicts."""
     results = []
     for h in headlines:
         match = find_ticker(h["title"], instruments)
@@ -312,7 +392,6 @@ def filter_headlines(headlines: list, instruments: dict) -> list:
             "confidence":  match["confidence"],
             "boosted":     match["boosted"]
         })
-
     logger.info(
         f"EntityShield: {len(results)}/{len(headlines)} "
         f"headlines matched to tickers"
@@ -326,30 +405,45 @@ if __name__ == "__main__":
 
     instruments = load_instruments()
 
-    # Yesterday's good and bad matches
+    # Combined test set: yesterday's wins + today's false positives
     test_cases = [
-        # (headline, expected_ticker_or_None)
-        ("Nestlé India shares jump 6% to hit 52-week high on strong Q4", "NESTLEIND"),
-        ("HDFC Bank Q3 beats estimates, NII up 15%",                     "HDFCBANK"),
-        ("Tata Motors receives large order from defence ministry",       "TMCV"),
-        ("Tata Chemicals Q4 results: Net profit rises 12%",              "TATACHEM"),
-        ("Reliance Industries Q4 results: Net profit rises 12%",         "RELIANCE"),
-        ("Infosys raises revenue guidance after strong Q3",              "INFY"),
-        ("Netweb Technologies Q4 EBITDA Surges 63.6%",                   "NETWEB"),
-        ("AI risks keep me up at night, says Kotak Bank CEO",            "KOTAKBANK"),
-        ("Kotak Mahindra Bank Shares In Focus After Q4 Results",         "KOTAKBANK"),
-        # False positives — should now return None
-        ("RBI maintains hawkish stance on inflation",                    None),
-        ("Bitcoin Tops $80,000 for Three-Month High as Asian Stocks Rise", None),
-        ("CEO Greg Abel moves to assure Berkshire shareholders",         None),
-        ("Laxmi India Finance Limited Announces Resignation of AVP",     None),
-        ("Bengaluru Rains: Seven Dead As Hospital Wall Collapses",       None),
-        ("Gold demand in Jan-Mar 2026 rose 10%",                         None),
+        # ── Should match correctly (true positives) ──────────────
+        ("Nestlé India shares jump 6% to hit 52-week high",                "NESTLEIND"),
+        ("HDFC Bank Q3 beats estimates, NII up 15%",                       "HDFCBANK"),
+        ("Tata Motors receives large order from defence ministry",         "TMCV"),
+        ("Tata Chemicals Q4 results: Net profit rises 12%",                "TATACHEM"),
+        ("Reliance Industries Q4 results: Net profit rises 12%",           "RELIANCE"),
+        ("Infosys raises revenue guidance after strong Q3",                "INFY"),
+        ("Netweb Technologies Q4 EBITDA Surges 63.6%",                     "NETWEB"),
+        ("AI risks keep me up at night, says Kotak Bank CEO",              "KOTAKBANK"),
+        ("Kotak Mahindra Bank Shares In Focus After Q4 Results",           "KOTAKBANK"),
+        ("Ashok Leyland reports 9% increase in April sales",               "ASHOKLEY"),
+        ("HFCL Secures Rs 84 Crore OFC Supply Order",                      "HFCL"),
+        ("Hindustan Aeronautics wins Tejas fighter jet deal",              "HAL"),
+        ("SPIC fertilizer plant resumes production after maintenance",     "SPIC"),
+
+        # ── Day 1 false positives (already fixed) ────────────────
+        ("RBI maintains hawkish stance on inflation",                      None),
+        ("Bitcoin Tops $80,000 as Asian Stocks Rise",                      None),
+        ("CEO Greg Abel moves to assure Berkshire shareholders",           None),
+        ("Laxmi India Finance Announces Resignation of AVP",               None),
+        ("Bengaluru Rains: Seven Dead As Hospital Wall Collapses",         None),
+        ("Gold demand in Jan-Mar 2026 rose 10%",                           None),
+
+        # ── Day 2 false positives (NEW — should now reject) ──────
+        ("SpiceJet's shrinking fleet puts international ops under scrutiny", None),
+        ("GameStop shares drop 6.5% after ambitious $55.5 billion bid",      None),
+        ("India Earnings: Mixed Q4 Results Meet High Valuations - Whalesbook", None),
+        ("Wall Street Highlights: S&P 500, Nasdaq Fall From Record High",    None),
+        ("21 Killed in China Firework Factory Explosion",                    None),
+        ("Godrej Properties targets ₹39,000 cr in sales for FY27",           None),  # GODREJPROP not GODREJIND
+        ("Ambuja Cements resets expansion strategy as Karan Adani flags",    None),
+        ("Cognizant trims shareholder payouts as AI dealmaking gathers pace", None),
     ]
 
-    print("\n── EntityShield Test ──")
+    print("\n── EntityShield v9.1 Test ──")
     print(f"{'Result':<7} {'Got':<12} {'Expected':<12} Headline")
-    print("-" * 100)
+    print("-" * 110)
 
     correct = 0
     for headline, expected in test_cases:
@@ -361,6 +455,6 @@ if __name__ == "__main__":
         status = "✅" if ok else "❌"
         a = actual if actual else "—"
         e = expected if expected else "—"
-        print(f"{status:<7} {a:<12} {e:<12} {headline[:70]}")
+        print(f"{status:<7} {a:<12} {e:<12} {headline[:75]}")
 
     print(f"\n{correct}/{len(test_cases)} correct matches")
