@@ -38,6 +38,8 @@ from src.beetle.intelligence      import run_pipeline, save_watchlist
 
 LOCK_FILE = "engine.lock"
 
+
+
 # Shared sector cache — updated every 5 minutes
 sector_cache = {}
 sector_cache_lock = threading.Lock()
@@ -63,7 +65,6 @@ def acquire_lock() -> bool:
         f.write(f"PID: {os.getpid()}\n")
     logger.info(f"✅ Engine lock acquired (PID: {os.getpid()})")
     return True
-
 
 def release_lock():
     """Remove lock file on clean shutdown."""
@@ -335,6 +336,16 @@ def main():
     if not acquire_lock():
         return
     
+    # ── Kite REST client for ExitManager kill switch fallback ─────────
+    from kiteconnect import KiteConnect
+    api_key = os.getenv("ZERODHA_API_KEY")
+    access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+    if not api_key or not access_token:
+        raise ValueError("ZERODHA_API_KEY or ZERODHA_ACCESS_TOKEN missing")
+    kite_rest = KiteConnect(api_key=api_key)
+    kite_rest.set_access_token(access_token)
+    logger.info("Kite REST client initialised (for kill switch fallback).")
+
     # ── Telegram notifier ─────────────────────────────────────────────
     try:
         notifier = TelegramNotifier()
@@ -365,21 +376,23 @@ def main():
     engine    = TradingEngine(timeout=3.0, is_paper_trading=IS_PAPER_TRADING)
     db        = TradeDB(db_path="trades.db")
     cleanup_stale_trades(db)
-    risk      = RiskManager(engine=engine, trade_db=db)
-    risk.set_sector_cache(sector_cache, sector_cache_lock)
-    exits     = ExitManager(engine=engine, trade_db=db,
-                            notifier=notifier, risk_manager=risk)
-    execution = ExecutionHandler(engine=engine, trade_db=db,
-                                 is_paper_trading=IS_PAPER_TRADING)
-    
-
-    db.log_system("INFO", "ENGINE_START",
-                  f"Symbols: {symbols} | Paper: {IS_PAPER_TRADING}")
 
     # ── Step 3: Load instruments + set up DataHandler ─────────────────
+    # (Moved up: ExitManager needs data_handler.kite for live LTP queries.)
     instruments = load_instruments()
     data_handler = DataHandler(engine=engine, instrument_map=instruments)
     data_handler.subscribe(symbols)
+
+    risk      = RiskManager(engine=engine, trade_db=db)
+    risk.set_sector_cache(sector_cache, sector_cache_lock)
+    exits = ExitManager(engine=engine, trade_db=db,
+                    notifier=notifier, risk_manager=risk,
+                    kite=kite_rest)   # ← use the REST instance
+    execution = ExecutionHandler(engine=engine, trade_db=db,
+                                 is_paper_trading=IS_PAPER_TRADING)
+
+    db.log_system("INFO", "ENGINE_START",
+                  f"Symbols: {symbols} | Paper: {IS_PAPER_TRADING}")
 
     # ── Step 4: Initialise strategies via StrategyRegistry ────────────
     registry = StrategyRegistry()
@@ -498,9 +511,11 @@ def main():
             now = datetime.now().time()
 
             # Kill switch check — 15:15 (only during market hours)
-            if dtime(15, 15) <= now <= dtime(15, 30):
+            if datetime.now().time() >= time(15, 15):
                 logger.info("⚡ 15:15 Kill switch — stopping engine.")
-                db.log_system("INFO", "ENGINE_STOP", "15:15 kill switch")
+                # v9.1 — synchronous kill before main loop exit
+                exits.force_kill_now()
+                exits.wait_for_all_closed(timeout=30)
                 break
 
             # Status heartbeat every 5 minutes
@@ -542,10 +557,25 @@ def main():
         logger.info("\nCtrl+C received — shutting down.")
 
     finally:
-        # ── Shutdown ─────────────────────────────────────────────────
+        # v9.1 — close any open positions BEFORE engine teardown.
+        # Fixes the shutdown race that left SASKEN open on Day 6 (11 May 2026).
+        try:
+            open_positions = exits.get_open_positions()
+            if open_positions:
+                logger.warning(
+                    f"  Shutdown: {len(open_positions)} positions still open — "
+                    f"forcing kill switch synchronously: {list(open_positions.keys())}"
+                )
+                exits.force_kill_now()
+                exits.wait_for_all_closed(timeout=30)
+        except Exception as e:
+            logger.error(f"  Shutdown kill switch error: {e}")
+
+        # Now safe to tear down the rest
         data_handler.stop()
         engine.stop()
-        if notifier:                    # ← add these 2 lines
+        exits.stop()
+        if notifier:
             notifier.shutdown()
         release_lock()
 

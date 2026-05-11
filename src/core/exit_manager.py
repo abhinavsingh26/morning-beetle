@@ -1,35 +1,37 @@
 import logging
 import threading
+import time as time_module
 from datetime import datetime, time
 from src.core.events import MarketEvent
 
 logger = logging.getLogger(__name__)
 
-# Default exit parameters (used as fallback if strategy not provided)
-DEFAULT_SL_PCT     = 0.008    # 0.8% stop loss
-DEFAULT_TARGET_PCT = 0.015    # 1.5% target
-DEFAULT_TRAIL_PCT  = 0.005    # 0.5% trailing stop from peak
+# Default exit parameters (fallback if strategy not provided)
+DEFAULT_SL_PCT     = 0.008
+DEFAULT_TARGET_PCT = 0.015
+DEFAULT_TRAIL_PCT  = 0.005
 
-PARTIAL_EXIT       = 0.5      # Exit 50% at target, trail remainder
-KILL_SWITCH        = time(15, 15)   # Force-close all at 15:15
+PARTIAL_EXIT       = 0.5
+KILL_SWITCH        = time(15, 15)        # Force-close all at 15:15
+KILL_TIMER_INTERVAL = 5                  # Background timer check interval (seconds)
+KILL_TIMER_START    = time(15, 14, 50)   # Start active polling 10s before kill
 
 # Per-strategy trail percentages (Blueprint v8)
 STRATEGY_TRAIL_PCT = {
-    "morning_breakout":    0.005,   # 0.5%
-    "rsi_momentum":        0.005,   # 0.5%
-    "sector_pullback":     0.003,   # 0.3% aggressive
-    "vol_contraction":     0.004,   # 0.4%
-    "vol_spike_sentiment": 0.004,   # 0.4%
+    "morning_breakout":    0.005,
+    "rsi_momentum":        0.005,
+    "sector_pullback":     0.003,
+    "vol_contraction":     0.004,
+    "vol_spike_sentiment": 0.004,
 }
 
-# Sentiment reversal threshold
 SENTIMENT_REVERSAL_THRESHOLD = 0.3
 
 
 class Position:
     """
     Tracks a single open position.
-    v8: SL/Target/Trail percentages now per-strategy.
+    v9: stores last_known_ltp for tick-less kill switch.
     """
 
     def __init__(self, trade_id: int, symbol: str, direction: str,
@@ -48,7 +50,6 @@ class Position:
         self.remaining_qty   = quantity
         self.sentiment_score = sentiment_score
 
-        # v8 — per-strategy exit params
         self.strategy_name   = strategy_name
         self.sl_pct          = sl_pct
         self.target_pct      = target_pct
@@ -62,10 +63,12 @@ class Position:
             self.sl_price     = round(entry_price * (1 + sl_pct), 2)
             self.target_price = round(entry_price * (1 - target_pct), 2)
 
-        self.peak_price     = entry_price
-        self.trail_active   = False
-        self.trail_sl       = None
-        self.partial_exited = False
+        self.peak_price       = entry_price
+        self.last_known_ltp   = entry_price   # v9 — fallback for kill switch
+        self.last_tick_at     = datetime.now()
+        self.trail_active     = False
+        self.trail_sl         = None
+        self.partial_exited   = False
 
         logger.info(f"  Position opened: {direction} {symbol} @ {entry_price:.2f} "
                    f"[{strategy_name}] SL={self.sl_price:.2f} "
@@ -77,42 +80,217 @@ class ExitManager:
     """
     Monitors all open positions and triggers exits.
 
-    v8 Exit types per Blueprint:
+    v9.1 Exit types:
     1. Stop Loss        — per-strategy SL%
     2. Target           — per-strategy target%, exit 50%, trail rest
     3. Trailing SL      — per-strategy trail%
     4. Sentiment        — FinBERT re-scan flips bias
-    5. Kill Switch      — 15:15 IST force-close all
-    6. Daily Loss       — handled by RiskManager STOP_ALL
-    7. Bucket Halt      — RiskManager halts bucket on loss limit
+    5. Kill Switch      — 15:15 IST force-close (event-driven via on_tick)
+    6. Time-Based Kill  — 15:15 IST force-close (background timer, fires
+                          even when ticks stop — uses last_known_ltp or
+                          REST API quote as fallback)
+    7. Synchronous Kill — force_kill_now() called from main shutdown to
+                          guarantee close-before-shutdown (NEW v9.1) ★
+    8. Daily Loss       — handled by RiskManager STOP_ALL
+    9. Bucket Halt      — RiskManager halts bucket on loss limit
     """
 
     def __init__(self, engine, trade_db, notifier=None,
-                 risk_manager=None):
+                 risk_manager=None, kite=None):
         self.engine       = engine
         self.trade_db     = trade_db
         self.notifier     = notifier
         self.risk_manager = risk_manager
+        self.kite         = kite
         self.positions    = {}
         self._lock        = threading.Lock()
         self.kill_fired   = False
-        logger.info("ExitManager initialised.")
 
+        # v9 — background time-based kill switch thread
+        self._stop_event  = threading.Event()
+        self._kill_thread = threading.Thread(
+            target=self._kill_switch_timer,
+            daemon=True,
+            name="KillSwitchTimer"
+        )
+        self._kill_thread.start()
+
+        logger.info("ExitManager initialised (with time-based kill switch).")
+
+    # ── v9 Time-Based Kill Switch Timer ──────────────────────────────
+    def _kill_switch_timer(self):
+        """
+        Background thread that polls every 5s.
+        Fires kill switch at 15:15 even if no ticks are arriving.
+        """
+        logger.info("Kill switch timer thread started.")
+        while not self._stop_event.is_set():
+            try:
+                now = datetime.now().time()
+
+                if now >= KILL_TIMER_START and now < KILL_SWITCH:
+                    time_module.sleep(0.5)
+                    continue
+
+                if now >= KILL_SWITCH and not self.kill_fired:
+                    self._fire_time_based_kill_switch()
+                    return
+
+                time_module.sleep(KILL_TIMER_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"Kill switch timer error: {e}")
+                time_module.sleep(KILL_TIMER_INTERVAL)
+
+        logger.info("Kill switch timer thread stopped.")
+
+    def _fire_time_based_kill_switch(self):
+        """
+        Force-close all open positions using fallback price strategy:
+        1. Try fresh quote from Kite REST API (most accurate).
+        2. Fall back to last_known_ltp from position.
+        3. Final fallback: entry_price (zero P&L recorded).
+        """
+        if self.kill_fired:
+            return
+
+        self.kill_fired = True
+
+        with self._lock:
+            symbols = list(self.positions.keys())
+
+        if not symbols:
+            logger.info("⚡ KILL SWITCH (timer): no open positions to close.")
+            self.trade_db.log_system(
+                "INFO", "KILL_SWITCH_TIMER",
+                "Kill switch fired at 15:15 — no open positions"
+            )
+            return
+
+        logger.warning(f"⚡ KILL SWITCH (timer-based): closing "
+                      f"{len(symbols)} positions at 15:15")
+        self.trade_db.log_system(
+            "WARNING", "KILL_SWITCH_TIMER",
+            f"Time-based kill switch firing for {len(symbols)} positions"
+        )
+
+        rest_prices = self._fetch_rest_prices(symbols)
+
+        for symbol in symbols:
+            with self._lock:
+                pos = self.positions.get(symbol)
+            if not pos:
+                continue
+
+            if rest_prices.get(symbol):
+                exit_price = rest_prices[symbol]
+                source = "REST"
+            elif pos.last_known_ltp:
+                exit_price = pos.last_known_ltp
+                source = "last_tick"
+            else:
+                exit_price = pos.entry_price
+                source = "entry_fallback"
+
+            logger.warning(f"  ⚡ Force-closing {symbol} @ {exit_price:.2f} "
+                          f"(source: {source})")
+            self._close_position(symbol, exit_price, "KILL_SWITCH_TIMER")
+
+    # ── v9.1 Synchronous shutdown kill switch ★ NEW ──────────────────
+    def force_kill_now(self):
+        """
+        Synchronously fire kill switch on demand. Called by main shutdown
+        handler at 15:15 to guarantee positions close BEFORE engine teardown.
+
+        This is the fix for the shutdown race condition: previously the
+        timer thread could be racing with main.py's shutdown sequence and
+        lose. Now main calls this synchronously and waits for completion.
+
+        Safe to call even if positions are already closed (no-op).
+        Safe to call multiple times (idempotent via kill_fired flag).
+        """
+        with self._lock:
+            symbols = list(self.positions.keys())
+
+        if not symbols:
+            logger.info("  force_kill_now(): no open positions, nothing to do.")
+            return
+
+        logger.warning(f"  🔒 SYNCHRONOUS KILL: closing {len(symbols)} positions "
+                      f"before shutdown")
+        self.trade_db.log_system(
+            "WARNING", "KILL_SWITCH_SYNC",
+            f"Synchronous kill from shutdown handler: {symbols}"
+        )
+
+        # Reuse the same fire logic (handles REST + fallback)
+        self._fire_time_based_kill_switch()
+
+    def wait_for_all_closed(self, timeout: int = 30) -> bool:
+        """
+        Block until all positions are closed, or timeout.
+        Returns True if all closed, False if timeout hit with positions still open.
+
+        Called from main shutdown after force_kill_now() to ensure DB writes
+        complete before engine tear-down.
+        """
+        start = time_module.time()
+        while True:
+            with self._lock:
+                still_open = list(self.positions.keys())
+
+            if not still_open:
+                logger.info("  ✅ All positions closed.")
+                return True
+
+            elapsed = time_module.time() - start
+            if elapsed >= timeout:
+                logger.error(f"  ⚠️  wait_for_all_closed timeout: "
+                            f"{len(still_open)} positions still open: {still_open}")
+                self.trade_db.log_system(
+                    "ERROR", "SHUTDOWN_TIMEOUT",
+                    f"Positions still open after {timeout}s timeout: {still_open}"
+                )
+                return False
+
+            time_module.sleep(0.5)
+
+    def _fetch_rest_prices(self, symbols: list) -> dict:
+        """Fetch live quotes via Kite REST API."""
+        if self.kite is None:
+            logger.warning("  No Kite instance — skipping REST quote fallback")
+            return {}
+
+        try:
+            kite_keys = [f"NSE:{s}" for s in symbols]
+            quotes = self.kite.quote(kite_keys)
+            result = {}
+            for s in symbols:
+                key = f"NSE:{s}"
+                if key in quotes and "last_price" in quotes[key]:
+                    result[s] = quotes[key]["last_price"]
+            logger.info(f"  REST quote fetch: {len(result)}/{len(symbols)} succeeded")
+            return result
+        except Exception as e:
+            logger.warning(f"  REST quote fetch failed: {e}")
+            return {}
+
+    def stop(self):
+        """Signal the kill switch timer thread to exit."""
+        self._stop_event.set()
+        logger.info("ExitManager stop signal sent.")
+
+    # ── Position management ──────────────────────────────────────────
     def add_position(self, trade_id: int, symbol: str, direction: str,
                      entry_price: float, quantity: int,
                      sentiment_score: float = 0.0,
                      strategy=None):
-        """
-        Register a new open position to monitor.
-        v8: accepts optional strategy object for per-strategy exit profile.
-        """
+        """Register a new open position."""
         if strategy is not None:
             strategy_name = getattr(strategy, "name", "default")
             sl_pct        = getattr(strategy, "sl_pct", DEFAULT_SL_PCT)
             target_pct    = getattr(strategy, "target_pct", DEFAULT_TARGET_PCT)
-            trail_pct     = STRATEGY_TRAIL_PCT.get(
-                strategy_name, DEFAULT_TRAIL_PCT
-            )
+            trail_pct     = STRATEGY_TRAIL_PCT.get(strategy_name, DEFAULT_TRAIL_PCT)
             loss_bucket   = getattr(strategy, "loss_bucket", "morning")
         else:
             strategy_name = "default"
@@ -123,17 +301,12 @@ class ExitManager:
 
         with self._lock:
             self.positions[symbol] = Position(
-                trade_id=trade_id,
-                symbol=symbol,
-                direction=direction,
-                entry_price=entry_price,
-                quantity=quantity,
+                trade_id=trade_id, symbol=symbol, direction=direction,
+                entry_price=entry_price, quantity=quantity,
                 sentiment_score=sentiment_score,
                 strategy_name=strategy_name,
-                sl_pct=sl_pct,
-                target_pct=target_pct,
-                trail_pct=trail_pct,
-                loss_bucket=loss_bucket
+                sl_pct=sl_pct, target_pct=target_pct,
+                trail_pct=trail_pct, loss_bucket=loss_bucket
             )
 
     def _close_position(self, symbol: str, exit_price: float,
@@ -146,22 +319,17 @@ class ExitManager:
         logger.info(f"  🔴 EXIT {reason}: {pos.direction} {symbol} "
                    f"[{pos.strategy_name}] @ {exit_price:.2f} | P&L: ₹{pnl:.2f}")
 
-        # v8 — Report P&L to RiskManager bucket tracker
         if self.risk_manager is not None:
             try:
                 self.risk_manager.update_bucket_loss(pos.loss_bucket, pnl)
             except Exception as e:
                 logger.warning(f"  Bucket loss update failed: {e}")
 
-        # Send Telegram exit alert
         if self.notifier:
             try:
                 self.notifier.send_exit_alert(
-                    symbol     = symbol,
-                    exit_price = exit_price,
-                    reason     = reason,
-                    pnl        = pnl,
-                    is_paper   = True
+                    symbol=symbol, exit_price=exit_price,
+                    reason=reason, pnl=pnl, is_paper=True
                 )
             except Exception as e:
                 logger.warning(f"  Telegram exit alert failed: {e}")
@@ -169,7 +337,7 @@ class ExitManager:
         return pnl
 
     def tighten_trails(self):
-        """At 15:00 — tighten trail stop to 0.2% to lock more profit."""
+        """At 15:00 — tighten trail stop to 0.2%."""
         with self._lock:
             for symbol, pos in self.positions.items():
                 if pos.trail_active and pos.trail_sl:
@@ -182,7 +350,7 @@ class ExitManager:
                     logger.info(f"  🔧 Trail tightened: {symbol} → {pos.trail_sl:.2f}")
 
     def move_to_breakeven(self):
-        """At 15:10 — move all SLs to breakeven to protect capital."""
+        """At 15:10 — move all SLs to breakeven."""
         with self._lock:
             for symbol, pos in self.positions.items():
                 if pos.direction == "BUY":
@@ -203,6 +371,8 @@ class ExitManager:
             if symbol not in self.positions:
                 return
             pos = self.positions[symbol]
+            pos.last_known_ltp = ltp
+            pos.last_tick_at   = datetime.now()
 
         if self._check_kill_switch(ltp):
             return
@@ -235,7 +405,6 @@ class ExitManager:
         if hit:
             pos.partial_exited = True
             pos.trail_active   = True
-            # v8 — use strategy's trail_pct
             if pos.direction == "BUY":
                 pos.trail_sl = round(ltp * (1 - pos.trail_pct), 2)
             else:
@@ -253,7 +422,6 @@ class ExitManager:
     def _check_trail(self, pos: Position, ltp: float) -> bool:
         if not pos.trail_active or pos.trail_sl is None:
             return False
-        # v8 — use strategy's trail_pct
         if pos.direction == "BUY":
             new_trail = round(ltp * (1 - pos.trail_pct), 2)
             pos.trail_sl = max(pos.trail_sl, new_trail)
@@ -268,13 +436,19 @@ class ExitManager:
         return False
 
     def _check_kill_switch(self, ltp: float) -> bool:
+        """
+        Event-driven kill switch (only fires if ticks are flowing).
+        Time-based fallback handled by _kill_switch_timer thread.
+        """
         now = datetime.now().time()
         if now >= KILL_SWITCH and not self.kill_fired:
             self.kill_fired = True
             symbols = list(self.positions.keys())
-            logger.warning(f"⚡ KILL SWITCH: closing {len(symbols)} positions")
-            self.trade_db.log_system("WARNING", "KILL_SWITCH",
-                                     f"Force-closing {len(symbols)} positions at 15:15")
+            logger.warning(f"⚡ KILL SWITCH (event-driven): closing {len(symbols)} positions")
+            self.trade_db.log_system(
+                "WARNING", "KILL_SWITCH",
+                f"Event-driven kill switch firing at 15:15"
+            )
             for symbol in symbols:
                 self._close_position(symbol, ltp, "KILL_SWITCH")
             return True
@@ -290,7 +464,7 @@ class ExitManager:
         flipped  = (original > 0 and new_sentiment < -SENTIMENT_REVERSAL_THRESHOLD) or \
                    (original < 0 and new_sentiment >  SENTIMENT_REVERSAL_THRESHOLD)
         if flipped:
-            ltp = 0.0
+            ltp = pos.last_known_ltp or pos.entry_price
             logger.info(f"  🔄 SENTIMENT REVERSAL: {symbol} "
                        f"score {original:+.2f} → {new_sentiment:+.2f}")
             self._close_position(symbol, ltp, "SENTIMENT_REVERSAL")
