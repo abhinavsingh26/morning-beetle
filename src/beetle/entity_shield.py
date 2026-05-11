@@ -28,7 +28,7 @@ KNOWN_ALIASES = {
     "KOTAK MAHINDRA":        "KOTAKBANK",
     "ASIAN ENERGY SERVICES": "ASIANENE",
     "ASIAN ENERGY":          "ASIANENE",
-    # ── Bajaj group disambiguation (NEW v9.2) ────────────────────
+    # ── Bajaj group disambiguation (v9.2) ────────────────────────
     "BAJAJ AUTO LTD":        "BAJAJ-AUTO",
     "BAJAJ AUTO":            "BAJAJ-AUTO",
     "BAJAJ FINANCE":         "BAJFINANCE",
@@ -74,6 +74,8 @@ KNOWN_ALIASES = {
     "HFCL":              "HFCL",
     "HCL":               "HCLTECH",
     "LTI":               "LTIM",
+    "SASKEN":            "SASKEN",
+    "SASKEN TECHNOLOGIES": "SASKEN",
     # ── Pharma ───────────────────────────────────────────────────
     "SUN PHARMA":  "SUNPHARMA",
     "DR REDDY":    "DRREDDY",
@@ -106,6 +108,8 @@ KNOWN_ALIASES = {
     "GODREJ AGROVET":     "GODREJAGRO",
     "GODREJ CONSUMER":    "GODREJCP",
     "GODREJ PROPERTIES":  "GODREJPROP",
+    "PIDILITE":           "PIDILITIND",
+    "PIDILITE INDUSTRIES": "PIDILITIND",
     # ── Metal ────────────────────────────────────────────────────
     "JSW STEEL":  "JSWSTEEL",
     "HINDALCO":   "HINDALCO",
@@ -128,12 +132,17 @@ KNOWN_ALIASES = {
     "SOUTHERN PETROCHEMICAL":      "SPIC",
     "FERTILIZERS AND CHEMICALS":   "FACT",
     "FACT KOCHI":                  "FACT",
-    # ── Industrial / Smaller specific names (NEW v9.2) ───────────
+    # ── Industrial / Smaller specific names (v9.2) ───────────────
     "DEEP INDUSTRIES":       "DEEPINDS",
     "DEEP INDS":             "DEEPINDS",
     "DISA INDIA":            "DISAQ",
     "BF INVESTMENT":         "BFINVEST",
     "BHARAT FORGE":          "BHARATFORG",
+    # ── NEW v9.3 — Ramco group disambiguation ────────────────────
+    "RAMCO INDUSTRIES":      "RAMCOIND",
+    "RAMCO CEMENTS":         "RAMCOCEM",
+    "RAMCO CEMENT":          "RAMCOCEM",
+    "RAMCO SYSTEMS":         "RAMCOSYS",
     # ── New Age ──────────────────────────────────────────────────
     "POLICYBAZAAR":  "POLICYBZR",
     "INDIAN HOTELS": "INDHOTEL",
@@ -163,7 +172,7 @@ GENERIC_TERMS = [
     "COGNIZANT",
     "MIDEAST TENSIONS", "MIDEAST", "MIDDLE EAST",
     "CHINA FIREWORK", "CHINA EXPLOSION", "XI JINPING",
-    # ── NEW v9.2 — foreign tech / PE / generic India macro ───────
+    # ── v9.2 — foreign tech / PE / generic India macro ───────────
     "DEEPMIND", "GOOGLE DEEPMIND", "ALPHABET",
     "PENTAGON", "PENTAGON AI",
     "PE FIRM", "PRIVATE EQUITY", "VC FIRM", "VENTURE CAPITAL",
@@ -173,6 +182,15 @@ GENERIC_TERMS = [
     "RECOGNIZE",                # the US PE firm name
     "1.7 BILLION FUND",
     "NICHE IT SERVICE",
+    # ── NEW v9.3 — Day 6 false positive filters ──────────────────
+    # Saudi Aramco / oil giant headlines fooled RAMCOIND
+    "ARAMCO", "SAUDI ARAMCO", "SAUDI OIL",
+    "OIL GIANT", "OIL EXPORTS", "STRAIT OF HORMUZ",
+    "SAUDI ARABIA", "GULF OIL",
+    # Yes Bank / generic India lender noise fooled DUGLOBAL-SM
+    "YES BANK LTD", "INDIA-FOCUSED LENDER", "AD HOC NEWS",
+    "INE528G01035",
+    "DIGITAL PUSH",  # generic phrase that fuzzy-matches DUDIGITAL
     # HR/internal noise
     "RESIGNATION OF", "ASSISTANT VICE PRESIDENT", "HUMAN RESOURCE",
     "UNIONISE", "UNIONISING", "WORKERS UNION",
@@ -236,7 +254,7 @@ AMBIGUOUS_TICKERS = {
     "ATHERENERG": ["ATHER ENERGY", "ATHER 450", "ATHER SCOOTER",
                    "ATHERENERG", "ATHER IPO"],
     "GATECHDVR":  ["GACM TECHNOLOGIES", "GACM", "GATECHDVR"],
-    # ── NEW v9.2 — Day 3 false positives ─────────────────────────
+    # ── v9.2 — Day 3 false positives ─────────────────────────────
     "DEEPINDS":   ["DEEP INDUSTRIES", "DEEP INDS",
                    "DEEPINDS", "OILFIELD SERVICES"],
     "DISAQ":      ["DISA INDIA", "DISA TECHNOLOGIES",
@@ -246,6 +264,17 @@ AMBIGUOUS_TICKERS = {
     "BAJFINANCE": ["BAJAJ FINANCE", "BAJFINANCE",
                    "BAJAJ FINSERV", "CONSUMER LOAN",
                    "EMI", "NBFC"],
+    # ── NEW v9.3 — Day 6 false positives ─────────────────────────
+    # RAMCOIND fooled by "Saudi Aramco" headline (substring "RAMCO")
+    "RAMCOIND":   ["RAMCO INDUSTRIES", "RAMCOIND",
+                   "ASBESTOS", "FIBRE CEMENT", "CEMENT SHEET",
+                   "RAMCO LTD", "RAMCO GROUP"],
+    # DUGLOBAL-SM fooled by "Yes Bank" generic India lender headline
+    "DUGLOBAL-SM": ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
+                    "DUGLOBAL", "DUDIGITAL GLOBAL"],
+    # Also guard the parent DUDIGITAL ticker if present
+    "DUDIGITAL":  ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
+                   "DUDIGITAL GLOBAL"],
 }
 
 
@@ -400,7 +429,7 @@ if __name__ == "__main__":
 
     instruments = load_instruments()
 
-    # Combined test set: Days 1+2+3
+    # Combined test set: Days 1+2+3+6
     test_cases = [
         # ── True positives (should match) ────────────────────────
         ("Nestlé India shares jump 6% to hit 52-week high",                "NESTLEIND"),
@@ -436,13 +465,21 @@ if __name__ == "__main__":
         ("21 Killed in China Firework Factory Explosion",                    None),
         ("Cognizant trims shareholder payouts as AI dealmaking gathers pace", None),
 
-        # ── Day 3 false positives (NEW v9.2) ─────────────────────
+        # ── Day 3 false positives (v9.2 fixes) ───────────────────
         ("Why Google DeepMind workers in UK are trying to unionise over Pentagon AI", None),
         ("US PE firm Recognize, armed with $1.7 billion fund, scouts for niche IT", None),
         ("Indian Companies Announce $1.1 Billion Investment In US, Create 1500 Jobs", None),
+
+        # ── NEW v9.3 — Day 6 false positives ─────────────────────
+        ("Saudi Oil Giant Aramco Sees 25% Jump In Q1 Profit After Shifting Exports From Strait of Hormuz", None),
+        ("Yes Bank Ltd stock (INE528G01035): India-focused lender eyes growth amid reforms and digital push - AD HOC NEWS", None),
+
+        # ── NEW v9.3 — Day 6 true positives (must still match) ───
+        ("Sasken Technologies Q4 & FY26 Results: Revenue Doubles, PAT Rises", "SASKEN"),
+        ("Pidilite walks pricing tightrope as raw material costs soar",      "PIDILITIND"),
     ]
 
-    print("\n── EntityShield v9.2 Test ──")
+    print("\n── EntityShield v9.3 Test ──")
     print(f"{'Result':<7} {'Got':<14} {'Expected':<14} Headline")
     print("-" * 115)
 
