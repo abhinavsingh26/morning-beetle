@@ -15,6 +15,29 @@ load("config/.env")
 
 logger = logging.getLogger(__name__)
 
+# ── v9.4 NEW — Suffix exclusion list ──────────────────────────────
+# Tickers with these suffixes are NOT eligible for intraday MIS:
+#   -BZ : BSE Trade-for-Trade (T+0 settlement, illiquid)
+#   -SM : SME segment (low volume, wide spreads)
+#   -ST : SME Trade-for-Trade
+#   -BE : Trade-for-Trade (NSE)
+#   -IL : Illiquid
+#   -IT : Illiquid Trade-for-Trade
+EXCLUDED_SUFFIXES = ("-BZ", "-SM", "-ST", "-BE", "-IL", "-IT")
+
+
+def is_tradeable(symbol: str) -> bool:
+    """
+    Filter out tickers that aren't suitable for intraday MIS:
+    - Suffix-based exclusions (BSE Trade-for-Trade, SME, etc.)
+    - Penny stocks (price will be checked at signal time, not here)
+    """
+    for suf in EXCLUDED_SUFFIXES:
+        if symbol.endswith(suf):
+            return False
+    return True
+
+
 # Sector map — ticker prefix to Nifty sector index
 SECTOR_MAP = {
     # ── Banking ──────────────────────────────────────────────────
@@ -34,6 +57,7 @@ SECTOR_MAP = {
     "PNB":        "NIFTY PSU BANK",
     "BANKBARODA": "NIFTY PSU BANK",
     "CANARABANK": "NIFTY PSU BANK",
+    "CANBK":      "NIFTY PSU BANK",   # v9.4 — added (today's win)
     "UNIONBANK":  "NIFTY PSU BANK",
     "INDIANB":    "NIFTY PSU BANK",
     "UCOBANK":    "NIFTY PSU BANK",
@@ -53,6 +77,7 @@ SECTOR_MAP = {
     "KPITTECH":   "NIFTY IT",
     "TATAELXSI":  "NIFTY IT",
     "CMSINFO":    "NIFTY IT",
+    "SASKEN":     "NIFTY IT",         # v9.4 — added
     # ── FMCG ─────────────────────────────────────────────────────
     "NESTLEIND":  "NIFTY FMCG",
     "HINDUNILVR": "NIFTY FMCG",
@@ -77,6 +102,7 @@ SECTOR_MAP = {
     "ASHOKLEY":   "NIFTY AUTO",
     "MOTHERSON":  "NIFTY AUTO",
     "BALKRISIND": "NIFTY AUTO",
+    "SCHAEFFLER": "NIFTY AUTO",
     # ── Pharma ───────────────────────────────────────────────────
     "SUNPHARMA":  "NIFTY PHARMA",
     "DRREDDY":    "NIFTY PHARMA",
@@ -88,6 +114,9 @@ SECTOR_MAP = {
     "ALKEM":      "NIFTY PHARMA",
     "IPCALAB":    "NIFTY PHARMA",
     "GLENMARK":   "NIFTY PHARMA",
+    "AJANTPHARM": "NIFTY PHARMA",     # v9.4 — added
+    "BIOCON":     "NIFTY PHARMA",     # v9.4 — added
+    "SANOFI":     "NIFTY PHARMA",
     # ── Metal ─────────────────────────────────────────────────────
     "TATASTEEL":  "NIFTY METAL",
     "JSWSTEEL":   "NIFTY METAL",
@@ -98,6 +127,8 @@ SECTOR_MAP = {
     "JINDALSTEL": "NIFTY METAL",
     "NATIONALUM": "NIFTY METAL",
     "COALINDIA":  "NIFTY METAL",
+    "RAIN":       "NIFTY METAL",
+    "TATACHEM":   "NIFTY METAL",
     # ── Energy ───────────────────────────────────────────────────
     "RELIANCE":   "NIFTY ENERGY",
     "ONGC":       "NIFTY ENERGY",
@@ -112,6 +143,8 @@ SECTOR_MAP = {
     "IOC":        "NIFTY ENERGY",
     "HINDPETRO":  "NIFTY ENERGY",
     "GAIL":       "NIFTY ENERGY",
+    "GOCLCORP":   "NIFTY ENERGY",
+    "ADANIENT":   "NIFTY ENERGY",
     # ── Realty ───────────────────────────────────────────────────
     "ADANIPORTS": "NIFTY REALTY",
     "DLF":        "NIFTY REALTY",
@@ -120,15 +153,6 @@ SECTOR_MAP = {
     "PHOENIXLTD": "NIFTY REALTY",
     "PRESTIGE":   "NIFTY REALTY",
     "BRIGADE":    "NIFTY REALTY",
-    # ── Defence/PSU (mapped to Realty as closest) ─────────────────
-    "HAL":        "NIFTY REALTY",
-    "BEL":        "NIFTY REALTY",
-    "BDL":        "NIFTY REALTY",
-    "MAZDOCK":    "NIFTY REALTY",
-    "ZENTEC":     "NIFTY REALTY",
-    "DCXINDIA":   "NIFTY REALTY",
-    "COCHINSHIP": "NIFTY REALTY",
-    "GRSE":       "NIFTY REALTY",
     # ── Media ────────────────────────────────────────────────────
     "ZEEL":       "NIFTY MEDIA",
     "SUNTV":      "NIFTY MEDIA",
@@ -143,6 +167,11 @@ SECTOR_MAP = {
     "WHIRLPOOL":  "NIFTY CONSUMER DURABLES",
     "BLUEDART":   "NIFTY CONSUMER DURABLES",
     "CROMPTON":   "NIFTY CONSUMER DURABLES",
+    "GRASIM":     "NIFTY CONSUMER DURABLES",
+    "ULTRACEMCO": "NIFTY CONSUMER DURABLES",
+    "AMBUJACEM":  "NIFTY CONSUMER DURABLES",
+    "ACCLIMITED": "NIFTY CONSUMER DURABLES",
+    "PIDILITIND": "NIFTY CONSUMER DURABLES",   # v9.4 — added
     # ── Healthcare ───────────────────────────────────────────────
     "APOLLOHOSP": "NIFTY HEALTHCARE",
     "FORTIS":     "NIFTY HEALTHCARE",
@@ -166,13 +195,6 @@ SECTOR_MAP = {
     # ── Telecom ──────────────────────────────────────────────────
     "BHARTIARTL": "NIFTY IT",
     "IDEA":       "NIFTY IT",
-    # ── Conglomerate ─────────────────────────────────────────────
-    "ADANIENT":   "NIFTY ENERGY",
-    "TATACHEM":   "NIFTY METAL",
-    "GRASIM":     "NIFTY CONSUMER DURABLES",
-    "ULTRACEMCO": "NIFTY CONSUMER DURABLES",
-    "AMBUJACEM":  "NIFTY CONSUMER DURABLES",
-    "ACCLIMITED": "NIFTY CONSUMER DURABLES",
     # ── New Age / Tech ────────────────────────────────────────────
     "ZOMATO":     "NIFTY IT",
     "PAYTM":      "NIFTY IT",
@@ -180,16 +202,8 @@ SECTOR_MAP = {
     "POLICYBZR":  "NIFTY BANK",
     "DELHIVERY":  "NIFTY IT",
     "INDHOTEL":   "NIFTY FMCG",
-    #-------- Improvements  --------
-    "SANOFI":     "NIFTY PHARMA",
-    "SCHAEFFLER": "NIFTY AUTO",
-    "RAIN":       "NIFTY METAL",
-    "GOCLCORP":   "NIFTY ENERGY",
-    "SANOFI":     "NIFTY PHARMA",
-    "SCHAEFFLER": "NIFTY AUTO",
-    "RAIN":       "NIFTY METAL",
-    "GOCLCORP":   "NIFTY ENERGY",
-    # Defence stocks
+    "MEESHO":     "NIFTY IT",                  # v9.4 — added
+    # ── Defence (NIFTY INDIA DEFENCE) ─────────────────────────────
     "HAL":        "NIFTY INDIA DEFENCE",
     "BEL":        "NIFTY INDIA DEFENCE",
     "BDL":        "NIFTY INDIA DEFENCE",
@@ -198,10 +212,11 @@ SECTOR_MAP = {
     "GRSE":       "NIFTY INDIA DEFENCE",
     "ZENTEC":     "NIFTY INDIA DEFENCE",
     "DCXINDIA":   "NIFTY INDIA DEFENCE",
-    # EV stocks
-    "TMCV":       "NIFTY EV",
+    "BHARATFORG": "NIFTY INDIA DEFENCE",       # v9.4 — added
+    # ── EV ────────────────────────────────────────────────────────
     "OLECTRA":    "NIFTY EV",
     "GREENPANEL": "NIFTY EV",
+    "ATHERENERG": "NIFTY EV",
 }
 
 MAX_WATCHLIST       = 10   # Scan top 10 tickers
@@ -211,6 +226,57 @@ MAX_POSITIONS       = 3   # Take first 3 that cross all gates
 def get_sector(symbol: str) -> str:
     """Look up sector for a ticker symbol."""
     return SECTOR_MAP.get(symbol, "UNKNOWN")
+
+
+def _apply_convergence_and_dedup(scored: list, heatmap: dict) -> list:
+    """
+    Shared logic for both run_pipeline and run_pipeline_fresh.
+    Applies:
+    1. Suffix-based eligibility filter (v9.4)
+    2. Sector convergence gate
+    3. Deduplication by symbol
+    Returns list ready for sort+truncate.
+    """
+    candidates = []
+    for h in scored:
+        symbol = h["ticker"]
+
+        # v9.4 — Suffix exclusion filter
+        if not is_tradeable(symbol):
+            logger.info(f"      DROPPED {symbol}: non-MIS-eligible suffix")
+            continue
+
+        sector = get_sector(symbol)
+        sector_data = heatmap.get(sector, {})
+        sector_bias = sector_data.get("bias", "UNKNOWN")
+
+        sentiment = h["sentiment_label"]
+        if sentiment == "BULLISH" and sector_bias == "BEARISH":
+            logger.info(f"      DROPPED {symbol}: BULLISH signal but {sector} is BEARISH")
+            continue
+        if sentiment == "BEARISH" and sector_bias == "BULLISH":
+            logger.info(f"      DROPPED {symbol}: BEARISH signal but {sector} is BULLISH")
+            continue
+
+        candidates.append({
+            "symbol":          symbol,
+            "name":            h["ticker_name"],
+            "sentiment_score": h["sentiment_score"],
+            "sentiment_label": h["sentiment_label"],
+            "sector":          sector,
+            "sector_bias":     sector_bias,
+            "confidence":      h["confidence"],
+            "headline":        h["title"],
+            "source":          h["source"]
+        })
+
+    # Deduplicate by symbol — keep highest confidence
+    deduped = {}
+    for c in candidates:
+        sym = c["symbol"]
+        if sym not in deduped or c["confidence"] > deduped[sym]["confidence"]:
+            deduped[sym] = c
+    return list(deduped.values())
 
 
 def run_pipeline(use_mock_heatmap: bool = False) -> list:
@@ -264,11 +330,9 @@ def run_pipeline(use_mock_heatmap: bool = False) -> list:
     # Step 5 — Wait for market open then fetch live heatmap
     logger.info("\n[5/5] Sector convergence gate...")
     now = datetime.now().time()
-    market_open = dtime(9, 15)
     heatmap_time = dtime(9, 12)
 
     if now < heatmap_time and not use_mock_heatmap:
-        # Wait until 09:12 for live sector data
         wait_seconds = (
             datetime.combine(datetime.today(), heatmap_time) -
             datetime.now()
@@ -281,44 +345,12 @@ def run_pipeline(use_mock_heatmap: bool = False) -> list:
 
     heatmap = get_heatmap(use_mock_if_closed=True)
 
-    candidates = []
-    for h in scored:
-        symbol = h["ticker"]
-        sector = get_sector(symbol)
-        sector_data = heatmap.get(sector, {})
-        sector_bias = sector_data.get("bias", "UNKNOWN")
-
-        # Convergence gate: sentiment must align with sector
-        sentiment = h["sentiment_label"]
-        if sentiment == "BULLISH" and sector_bias == "BEARISH":
-            logger.info(f"      DROPPED {symbol}: BULLISH signal but {sector} is BEARISH")
-            continue
-        if sentiment == "BEARISH" and sector_bias == "BULLISH":
-            logger.info(f"      DROPPED {symbol}: BEARISH signal but {sector} is BULLISH")
-            continue
-
-        candidates.append({
-            "symbol":          symbol,
-            "name":            h["ticker_name"],
-            "sentiment_score": h["sentiment_score"],
-            "sentiment_label": h["sentiment_label"],
-            "sector":          sector,
-            "sector_bias":     sector_bias,
-            "confidence":      h["confidence"],
-            "headline":        h["title"],
-            "source":          h["source"]
-        })
-
-    # Deduplicate by symbol — keep highest confidence
-    deduped = {}
-    for c in candidates:
-        sym = c["symbol"]
-        if sym not in deduped or c["confidence"] > deduped[sym]["confidence"]:
-            deduped[sym] = c
+    # v9.4 — Use shared filter/dedup helper (includes suffix exclusion)
+    deduped = _apply_convergence_and_dedup(scored, heatmap)
 
     # Sort by abs(sentiment_score) descending, take top MAX_WATCHLIST
     watchlist = sorted(
-        deduped.values(),
+        deduped,
         key=lambda x: abs(x["sentiment_score"]),
         reverse=True
     )[:MAX_WATCHLIST]
@@ -331,23 +363,21 @@ def run_pipeline(use_mock_heatmap: bool = False) -> list:
 
     return watchlist
 
-def run_pipeline_fresh(exclude_symbols: list = []) -> list:
+
+def run_pipeline_fresh(exclude_symbols: list = None) -> list:
     """
     Re-run pipeline excluding already-subscribed symbols.
     Used when dynamic universe refresh is triggered.
+    v9.4 — Now uses suffix filter, same as run_pipeline().
     """
+    if exclude_symbols is None:
+        exclude_symbols = []
     logger.info("🔄 Dynamic universe refresh triggered...")
-    
-    # Step 1 — Load instruments
+
     instruments = load_instruments()
-
-    # Step 2 — Fetch fresh headlines
     raw_headlines = fetch_all_headlines(max_per_source=20)
-
-    # Step 3 — EntityShield
     matched = filter_headlines(raw_headlines, instruments)
 
-    # Step 4 — FinBERT scoring
     scored = []
     for h in matched:
         result = score_headline(h["title"])
@@ -363,48 +393,20 @@ def run_pipeline_fresh(exclude_symbols: list = []) -> list:
             "sentiment_label": result["label"]
         })
 
-    # Step 5 — Heatmap gate
     heatmap = get_heatmap(use_mock_if_closed=True)
-    candidates = []
-    for h in scored:
-        symbol = h["ticker"]
-        sector = get_sector(symbol)
-        sector_data = heatmap.get(sector, {})
-        sector_bias = sector_data.get("bias", "UNKNOWN")
-        sentiment   = h["sentiment_label"]
 
-        if sentiment == "BULLISH" and sector_bias == "BEARISH":
-            continue
-        if sentiment == "BEARISH" and sector_bias == "BULLISH":
-            continue
-
-        candidates.append({
-            "symbol":          symbol,
-            "name":            h["ticker_name"],
-            "sentiment_score": h["sentiment_score"],
-            "sentiment_label": h["sentiment_label"],
-            "sector":          sector,
-            "sector_bias":     sector_bias,
-            "confidence":      h["confidence"],
-            "headline":        h["title"],
-            "source":          h["source"]
-        })
-
-    # Deduplicate and sort
-    deduped = {}
-    for c in candidates:
-        sym = c["symbol"]
-        if sym not in deduped or c["confidence"] > deduped[sym]["confidence"]:
-            deduped[sym] = c
+    # v9.4 — Use shared filter/dedup helper (includes suffix exclusion)
+    deduped = _apply_convergence_and_dedup(scored, heatmap)
 
     fresh = sorted(
-        deduped.values(),
+        deduped,
         key=lambda x: abs(x["sentiment_score"]),
         reverse=True
     )[:MAX_WATCHLIST]
 
     logger.info(f"🔄 Fresh candidates: {[f['symbol'] for f in fresh]}")
     return fresh
+
 
 def save_watchlist(watchlist: list, path: str = "watchlist.json"):
     """Save watchlist to JSON file."""

@@ -225,6 +225,12 @@ GENERIC_TERMS = [
     # Generic earnings noise (v9.1)
     "INDIA EARNINGS", "MIXED Q4 RESULTS", "WHALESBOOK",
     "MIXED RESULTS",
+    # Day 7 false positives
+    "CATTLE FUTURES", "CME CATTLE", "BEEF IMPORT", "US BEEF",   
+    "LIVESTOCK", "PORK FUTURES", "COMMODITY FUTURES",
+    "BLOCK DEAL", "GROWW", "EARLY INVESTORS REAP",
+    "STARTUP IPO", "498 MILLION",
+    "BUZZING STOCKS", "BUZZING STOCK", "STOCKS IN FOCUS", "STOCKS TO WATCH",
 ]
 
 # Tickers requiring specific context word
