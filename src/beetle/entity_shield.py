@@ -59,22 +59,23 @@ KNOWN_ALIASES = {
     "PNB HOUSING":         "PNBHOUSING",
     "INDUSIND":            "INDUSINDBK",
     "STATE BANK":          "SBIN",
+    "STATE BANK OF INDIA": "SBIN",
     "KOTAK":               "KOTAKBANK",
     "SBI":                 "SBIN",
     # ── IT ───────────────────────────────────────────────────────
-    "HCL TECHNOLOGIES":  "HCLTECH",
-    "TECH MAHINDRA":     "TECHM",
-    "LTIMINDTREE":       "LTIM",
-    "HCL TECH":          "HCLTECH",
-    "HCLTECH":           "HCLTECH",
-    "PERSISTENT":        "PERSISTENT",
-    "MPHASIS":           "MPHASIS",
-    "INFOSYS":           "INFY",
-    "WIPRO":             "WIPRO",
-    "HFCL":              "HFCL",
-    "HCL":               "HCLTECH",
-    "LTI":               "LTIM",
-    "SASKEN":            "SASKEN",
+    "HCL TECHNOLOGIES":    "HCLTECH",
+    "TECH MAHINDRA":       "TECHM",
+    "LTIMINDTREE":         "LTIM",
+    "HCL TECH":            "HCLTECH",
+    "HCLTECH":             "HCLTECH",
+    "PERSISTENT":          "PERSISTENT",
+    "MPHASIS":             "MPHASIS",
+    "INFOSYS":             "INFY",
+    "WIPRO":               "WIPRO",
+    "HFCL":                "HFCL",
+    "HCL":                 "HCLTECH",
+    "LTI":                 "LTIM",
+    "SASKEN":              "SASKEN",
     "SASKEN TECHNOLOGIES": "SASKEN",
     # ── Pharma ───────────────────────────────────────────────────
     "SUN PHARMA":  "SUNPHARMA",
@@ -86,29 +87,31 @@ KNOWN_ALIASES = {
     "ADANI PORTS":       "ADANIPORTS",
     "ADANI POWER":       "ADANIPOWER",
     "ADANI GREEN":       "ADANIGREEN",
+    "ADANI GREEN ENERGY": "ADANIGREEN",
     "POWER GRID":        "POWERGRID",
     "RELIANCE":          "RELIANCE",
-    "ONGC":              "ONGC",
-    "NTPC":              "NTPC",
+    "ONGC":               "ONGC",
+    "NTPC":               "NTPC",
     # ── Auto ─────────────────────────────────────────────────────
-    "HERO MOTO":     "HEROMOTOCO",
-    "HERO MOTOCORP": "HEROMOTOCO",
-    "MAHINDRA":      "M&M",
-    "MARUTI":        "MARUTI",
-    "EICHER":        "EICHERMOT",
-    "ASHOK LEYLAND": "ASHOKLEY",
-    "ATHER ENERGY":  "ATHERENERG",
+    "HERO MOTO":         "HEROMOTOCO",
+    "HERO MOTOCORP":     "HEROMOTOCO",
+    "MAHINDRA & MAHINDRA": "M&M",     # v9.5 — proper M&M disambiguation
+    "MAHINDRA":          "M&M",
+    "MARUTI":            "MARUTI",
+    "EICHER":            "EICHERMOT",
+    "ASHOK LEYLAND":     "ASHOKLEY",
+    "ATHER ENERGY":      "ATHERENERG",
     # ── FMCG ─────────────────────────────────────────────────────
-    "NESTLE":             "NESTLEIND",
-    "NESTLÉ":             "NESTLEIND",
-    "ASIAN PAINTS":       "ASIANPAINT",
-    "HUL":                "HINDUNILVR",
-    "AIRTEL":             "BHARTIARTL",
-    "GODREJ INDUSTRIES":  "GODREJIND",
-    "GODREJ AGROVET":     "GODREJAGRO",
-    "GODREJ CONSUMER":    "GODREJCP",
-    "GODREJ PROPERTIES":  "GODREJPROP",
-    "PIDILITE":           "PIDILITIND",
+    "NESTLE":              "NESTLEIND",
+    "NESTLÉ":              "NESTLEIND",
+    "ASIAN PAINTS":        "ASIANPAINT",
+    "HUL":                 "HINDUNILVR",
+    "AIRTEL":              "BHARTIARTL",
+    "GODREJ INDUSTRIES":   "GODREJIND",
+    "GODREJ AGROVET":      "GODREJAGRO",
+    "GODREJ CONSUMER":     "GODREJCP",
+    "GODREJ PROPERTIES":   "GODREJPROP",
+    "PIDILITE":            "PIDILITIND",
     "PIDILITE INDUSTRIES": "PIDILITIND",
     # ── Metal ────────────────────────────────────────────────────
     "JSW STEEL":  "JSWSTEEL",
@@ -138,11 +141,19 @@ KNOWN_ALIASES = {
     "DISA INDIA":            "DISAQ",
     "BF INVESTMENT":         "BFINVEST",
     "BHARAT FORGE":          "BHARATFORG",
-    # ── NEW v9.3 — Ramco group disambiguation ────────────────────
+    # ── Ramco group disambiguation (v9.3) ────────────────────────
     "RAMCO INDUSTRIES":      "RAMCOIND",
     "RAMCO CEMENTS":         "RAMCOCEM",
     "RAMCO CEMENT":          "RAMCOCEM",
     "RAMCO SYSTEMS":         "RAMCOSYS",
+    # ── NEW v9.5 — Supreme Industries disambiguation ─────────────
+    "SUPREME INDUSTRIES":    "SUPREMEIND",
+    "SUPREME PETROCHEM":     "SUPPETRO",
+    # ── NEW v9.5 — Birla group disambiguation ────────────────────
+    "BIRLA CABLE":           "BIRLACABLE",
+    "ADITYA BIRLA CAPITAL":  "ABCAPITAL",
+    "ADITYA BIRLA FASHION":  "ABFRL",
+    "GRASIM":                "GRASIM",
     # ── New Age ──────────────────────────────────────────────────
     "POLICYBAZAAR":  "POLICYBZR",
     "INDIAN HOTELS": "INDHOTEL",
@@ -182,15 +193,15 @@ GENERIC_TERMS = [
     "RECOGNIZE",                # the US PE firm name
     "1.7 BILLION FUND",
     "NICHE IT SERVICE",
-    # ── NEW v9.3 — Day 6 false positive filters ──────────────────
-    # Saudi Aramco / oil giant headlines fooled RAMCOIND
+    # ── v9.3 — Day 6 false positive filters ──────────────────────
+    # Saudi Aramco / oil giant
     "ARAMCO", "SAUDI ARAMCO", "SAUDI OIL",
     "OIL GIANT", "OIL EXPORTS", "STRAIT OF HORMUZ",
     "SAUDI ARABIA", "GULF OIL",
-    # Yes Bank / generic India lender noise fooled DUGLOBAL-SM
+    # Yes Bank / generic India lender noise
     "YES BANK LTD", "INDIA-FOCUSED LENDER", "AD HOC NEWS",
     "INE528G01035",
-    "DIGITAL PUSH",  # generic phrase that fuzzy-matches DUDIGITAL
+    "DIGITAL PUSH",
     # HR/internal noise
     "RESIGNATION OF", "ASSISTANT VICE PRESIDENT", "HUMAN RESOURCE",
     "UNIONISE", "UNIONISING", "WORKERS UNION",
@@ -225,12 +236,30 @@ GENERIC_TERMS = [
     # Generic earnings noise (v9.1)
     "INDIA EARNINGS", "MIXED Q4 RESULTS", "WHALESBOOK",
     "MIXED RESULTS",
-    # Day 7 false positives
-    "CATTLE FUTURES", "CME CATTLE", "BEEF IMPORT", "US BEEF",   
+    # Day 7 false positives (v9.4)
+    "CATTLE FUTURES", "CME CATTLE", "BEEF IMPORT", "US BEEF",
     "LIVESTOCK", "PORK FUTURES", "COMMODITY FUTURES",
     "BLOCK DEAL", "GROWW", "EARLY INVESTORS REAP",
     "STARTUP IPO", "498 MILLION",
     "BUZZING STOCKS", "BUZZING STOCK", "STOCKS IN FOCUS", "STOCKS TO WATCH",
+    "TOP BUZZING STOCKS",
+    # ── NEW v9.5 — Day 8 false positives ─────────────────────────
+    # "AD HOC NEWS" stock-mention noise (M&M, ADANIGREEN today)
+    "TECHNICAL SIGNALS", "AMID TECHNICAL", "DROPS 2.54",
+    "INE101A01026", "INE364U01010",  # ISIN codes in headlines
+    # Supreme Court case fooled SUPREMEIND
+    "SUPREME COURT", "MOVES SUPREME COURT", "RANI KAPUR",
+    "FAMILY TRUST", "TRUST-LINKED BOARD",
+    # Aditya Birla Health (not Birla Cable)
+    "ADITYA BIRLA HEALTH", "BIRLA HEALTH",
+    "WELLNESS INCENTIVES", "CLAIMS RATIOS",
+    # Syrma SGS named someone else
+    "SYRMA SGS", "JASBIR SINGH GUJRAL",
+    # HG Infra mention in Sasken multi-stock headline
+    "HG INFRA",
+    # Generic earnings calendar noise
+    "100+ FIRMS TO DECLARE", "FIRMS TO DECLARE EARNINGS",
+    "DIXON TECH", "MOBIKWIK",  # mentioned alongside other Q4 calendar
 ]
 
 # Tickers requiring specific context word
@@ -238,7 +267,9 @@ AMBIGUOUS_TICKERS = {
     # Existing
     "ASIANENE":   ["ENERGY", "OIL", "GAS", "DRILLING", "ASIAN ENERGY"],
     "M&M":        ["MAHINDRA &", "M&M", "MAHINDRA AUTO",
-                   "MAHINDRA SUV", "TRACTORS", "MAHINDRA Q"],
+                   "MAHINDRA SUV", "TRACTORS", "MAHINDRA Q",
+                   "MAHINDRA RESULTS", "MAHINDRA FINANCE",
+                   "M&M FINANCIAL"],
     "BEL":        ["BHARAT ELECTRONICS", "DEFENCE",
                    "RADAR", "ELECTRONICS LTD"],
     "RAIN":       ["RAIN INDUSTRIES", "RAIN COMMODITIES"],
@@ -270,17 +301,35 @@ AMBIGUOUS_TICKERS = {
     "BAJFINANCE": ["BAJAJ FINANCE", "BAJFINANCE",
                    "BAJAJ FINSERV", "CONSUMER LOAN",
                    "EMI", "NBFC"],
-    # ── NEW v9.3 — Day 6 false positives ─────────────────────────
-    # RAMCOIND fooled by "Saudi Aramco" headline (substring "RAMCO")
+    # ── v9.3 — Day 6 false positives ─────────────────────────────
     "RAMCOIND":   ["RAMCO INDUSTRIES", "RAMCOIND",
                    "ASBESTOS", "FIBRE CEMENT", "CEMENT SHEET",
                    "RAMCO LTD", "RAMCO GROUP"],
-    # DUGLOBAL-SM fooled by "Yes Bank" generic India lender headline
     "DUGLOBAL-SM": ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
                     "DUGLOBAL", "DUDIGITAL GLOBAL"],
-    # Also guard the parent DUDIGITAL ticker if present
-    "DUDIGITAL":  ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
-                   "DUDIGITAL GLOBAL"],
+    "DUDIGITAL":   ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
+                    "DUDIGITAL GLOBAL"],
+    # ── NEW v9.5 — Day 8 false positives ─────────────────────────
+    # SUPREMEIND fooled by "Supreme Court" headline
+    "SUPREMEIND":  ["SUPREME INDUSTRIES", "SUPREMEIND",
+                    "PVC PIPE", "PVC PIPES", "POLYMER",
+                    "PLASTIC PIPE", "BUILDING PRODUCTS",
+                    "INDUSTRIAL PRODUCTS"],
+    # BIRLACABLE fooled by "Aditya Birla Health" headline
+    "BIRLACABLE":  ["BIRLA CABLE", "BIRLACABLE",
+                    "OPTICAL FIBRE", "TELECOM CABLE",
+                    "FIBRE OPTIC", "CABLE LTD",
+                    "BIRLA ERICSSON"],
+    # ADANIGREEN fooled by "AD HOC NEWS" pattern with generic stock dip
+    "ADANIGREEN":  ["ADANI GREEN", "ADANIGREEN",
+                    "ADANI GREEN ENERGY", "RENEWABLE",
+                    "SOLAR", "WIND ENERGY", "GREEN HYDROGEN"],
+    # SBIN fooled by "Syrma SGS" headline (name-fuzzy noise)
+    # SBIN requires actual SBI / State Bank context
+    "SBIN":        ["SBI", "STATE BANK", "STATE BANK OF INDIA",
+                    "SBIN", "SBI Q", "SBI BANK",
+                    "PSU BANK SBI", "SBI CARDS",
+                    "SBI RESULTS", "SBI MUTUAL"],
 }
 
 
@@ -327,15 +376,24 @@ def find_ticker(headline: str, instruments: dict,
                 threshold: int = MATCH_THRESHOLD) -> dict | None:
     """
     Match headline to ticker through layered defences:
+    Step 0: Generic-headline rejection (v9.6 — moved earlier).
     Step 1: TATA MOTORS → TMCV special case.
     Step 2: Known aliases (longest first).
-    Step 3: Generic-headline rejection.
-    Step 4: Fuzzy match.
-    Step 5: Short-ticker substring guard.
-    Step 6: Ambiguous-ticker context check.
+    Step 3: Fuzzy match.
+    Step 4: Short-ticker substring guard.
+    Step 5: Ambiguous-ticker context check.
     """
     headline_upper = headline.upper()
     cleaned = _clean_headline(headline)
+
+    # ── Step 0 — Generic rejection (v9.6 — moved BEFORE alias check) ──
+    # Prevents multi-stock noise headlines from matching real tickers
+    # via the alias path. Example: "Q4 Results Today: Dixon Tech, Tata
+    # Power, MobiKwik, Dr Reddy's Among 100+ Firms To Declare Earnings"
+    # was matching TATAPOWER via the "TATA POWER" alias before generic
+    # terms could intercept it.
+    if _is_generic(headline):
+        return None
 
     # Special: TATA MOTORS → TMCV
     if "TATA MOTORS" in headline_upper and "TMCV" in instruments:
@@ -365,11 +423,7 @@ def find_ticker(headline: str, instruments: dict,
                     "boosted":    boost > 0
                 }
 
-    # Step 2 — Generic rejection
-    if _is_generic(headline):
-        return None
-
-    # Step 3 — Fuzzy match
+    # Step 2 — Fuzzy match
     best_score = 0
     best_match = None
 
@@ -389,12 +443,12 @@ def find_ticker(headline: str, instruments: dict,
 
     matched_symbol = best_match["symbol"]
 
-    # Step 4 — Short-ticker substring guard
+    # Step 3 — Short-ticker substring guard
     if _is_short_ticker_substring_only(matched_symbol, headline_upper):
         logger.debug(f"  Skipping short-ticker substring match: {matched_symbol}")
         return None
 
-    # Step 5 — Ambiguous-ticker context check
+    # Step 4 — Ambiguous-ticker context check
     if _is_ambiguous_match(matched_symbol, headline_upper):
         logger.debug(f"  Skipping ambiguous fuzzy match: {matched_symbol}")
         return None
@@ -435,7 +489,7 @@ if __name__ == "__main__":
 
     instruments = load_instruments()
 
-    # Combined test set: Days 1+2+3+6
+    # Combined test set: Days 1+2+3+6+7+8
     test_cases = [
         # ── True positives (should match) ────────────────────────
         ("Nestlé India shares jump 6% to hit 52-week high",                "NESTLEIND"),
@@ -463,7 +517,7 @@ if __name__ == "__main__":
         ("CEO Greg Abel moves to assure Berkshire shareholders",           None),
         ("Bengaluru Rains: Seven Dead As Hospital Wall Collapses",         None),
 
-        # ── Day 2 false positives (fixed) ────────────────────────
+        # ── Day 2 false positives ────────────────────────────────
         ("SpiceJet's shrinking fleet puts international ops under scrutiny", None),
         ("GameStop shares drop 6.5% after $55.5 billion bid",                None),
         ("India Earnings: Mixed Q4 Results - Whalesbook",                    None),
@@ -471,21 +525,41 @@ if __name__ == "__main__":
         ("21 Killed in China Firework Factory Explosion",                    None),
         ("Cognizant trims shareholder payouts as AI dealmaking gathers pace", None),
 
-        # ── Day 3 false positives (v9.2 fixes) ───────────────────
+        # ── Day 3 false positives ────────────────────────────────
         ("Why Google DeepMind workers in UK are trying to unionise over Pentagon AI", None),
         ("US PE firm Recognize, armed with $1.7 billion fund, scouts for niche IT", None),
         ("Indian Companies Announce $1.1 Billion Investment In US, Create 1500 Jobs", None),
 
-        # ── NEW v9.3 — Day 6 false positives ─────────────────────
+        # ── Day 6 false positives ────────────────────────────────
         ("Saudi Oil Giant Aramco Sees 25% Jump In Q1 Profit After Shifting Exports From Strait of Hormuz", None),
         ("Yes Bank Ltd stock (INE528G01035): India-focused lender eyes growth amid reforms and digital push - AD HOC NEWS", None),
 
-        # ── NEW v9.3 — Day 6 true positives (must still match) ───
+        # ── Day 6 true positives (must still match) ──────────────
         ("Sasken Technologies Q4 & FY26 Results: Revenue Doubles, PAT Rises", "SASKEN"),
         ("Pidilite walks pricing tightrope as raw material costs soar",      "PIDILITIND"),
+
+        # ── Day 7 false positives ────────────────────────────────
+        ("CME cattle futures pare losses after falling on US beef import plan", None),
+        ("Early investors in Groww set to reap up to $498 million in block deal", None),
+        ("NIFTY50 at 23,949, SENSEX down 838 pts in afternoon session; SBI, Swiggy, Canara Bank, Titan Company among buzzing stocks - Upstox", None),
+        # Day 7 true positive must still pass
+        ("Canara Bank: Motilal Oswal Trims Target Price After Q4 Results, Cites Tepid NIM Guidance", "CANBK"),
+
+        # ── NEW v9.5 — Day 8 false positives ─────────────────────
+        ("Mahindra & Mahindra Ltd stock (INE101A01026): Drops 2.54% amid technical signals - AD HOC NEWS", None),
+        ("Adani Green Energy Ltd stock (INE364U01010): Share price dips 1.10% to ?1,350 - AD HOC NEWS", None),
+        ("Syrma SGS Technology expects 30% revenue growth in tricky FY27, MD Jasbir Singh Gujral says", None),
+        ("Rani Kapur moves Supreme Court over family trust-linked board meeting", None),
+        ("Aditya Birla Health bets on wellness incentives to improve claims ratios", None),
+        ("Sasken Technologies Q4 FY26 Results | HG Infra Secures Large Infrastructure Contract | Top Buzzing Stocks Today - Equitymaster", None),
+        ("Q4FY26 Results Today: Dixon Tech, Tata Power, One MobiKwik, Dr Reddy's Among 100+ Firms To Declare Earnings - NDTV Profit", None),
+
+        # ── NEW v9.5 — Day 8 true positives (must still match) ───
+        ("Indian Hotels Q4 Results: Profit, Revenue Rise Over 14%; Dividend Declared - NDTV Profit", "INDHOTEL"),
+        ("Bharti Airtel Q4 preview: strong user additions but flat Arpu may temper growth", "BHARTIARTL"),
     ]
 
-    print("\n── EntityShield v9.3 Test ──")
+    print("\n── EntityShield v9.5 Test ──")
     print(f"{'Result':<7} {'Got':<14} {'Expected':<14} Headline")
     print("-" * 115)
 
