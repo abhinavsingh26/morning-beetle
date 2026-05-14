@@ -1,35 +1,22 @@
 """
-run_signal_boy_shadow.py — Shadow mode runner for Signal Boy.
+run_signal_boy_shadow.py v2 — Shadow mode runner with Option C improvements.
 
-Purpose:
-    Run Signal Boy with REAL fetchers, REAL EntityShield, REAL FinBERT
-    in a separate process from the live engine. Writes to
-    signals/queue_shadow.json (NOT queue.json). Engine is untouched.
+CHANGES vs v1:
+    - Uses daily rotating logs in logs/signal_boy/YYYY-MM-DD.log
+    - Wires NewsArchiver → I:/01_Active_Projects/Morning_Beetle/04_news_archive/
+    - Queue snapshot + JSONL history both written (via QueueWriter v1.1)
 
-How it works:
-    - Imports the actual src.beetle modules
-    - Wires 7 existing RSS feeds via news_fetcher.FEEDS
-    - Adds 3 new sources (NSE filings, Pulse RSS, PIB Defence) as stubs
-      that gracefully no-op until real fetcher functions exist
-    - Runs SignalBoy in shadow mode
-    - Outputs to signals/queue_shadow.json + signal_boy_shadow.log
+Outputs (per Signal Boy run):
+    logs/signal_boy/2026-05-14.log               ← rotated daily
+    signals/queue_shadow.json                     ← latest snapshot
+    signals/history_shadow/2026-05-14_scans.jsonl ← every scan, append-only
+    I:/.../04_news_archive/2026-05-14_news.jsonl  ← every headline ever seen
 
-Usage:
-    Open a SEPARATE PowerShell terminal at the project root:
+Usage (separate PowerShell terminal):
+    cd C:\\Users\\Abhinav\\MorningBeetle_Dev
+    python tools/run_signal_boy_shadow.py
 
-        cd C:\\Users\\Abhinav\\MorningBeetle_Dev
-        python tools/run_signal_boy_shadow.py
-
-    Leave it running alongside the engine. Press Ctrl+C to stop.
-    Inspect signals/queue_shadow.json at any time to see latest scan output.
-
-Safety:
-    - This script DOES NOT touch main.py
-    - This script DOES NOT modify the live watchlist.json
-    - This script DOES NOT subscribe to WebSocket / place orders
-    - It only reads RSS feeds and writes shadow output
-
-Author: Abhinav (Phase 6D.3 — pre-6D.4 shadow validation, May 2026)
+Author: Abhinav (Phase 6D.3 Option C, May 2026)
 """
 
 import sys
@@ -43,62 +30,41 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# ── Logging setup — separate log file so shadow output is independent ──
-LOG_FILE = os.path.join(PROJECT_ROOT, "signal_boy_shadow.log")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
+# ── Initialise rotating logger BEFORE any other imports ──
+from src.utils.logging_setup import setup_daily_rotating_logger
+log_path = setup_daily_rotating_logger(
+    component="signal_boy",
+    log_root="logs",
+    retention_days=90,
 )
+
 logger = logging.getLogger("signal_boy_shadow")
 
 
 def build_source_fetchers():
     """
-    Build the dict of {source_id: callable() -> list[dict]} that
-    SignalBoy expects.
-
-    The 7 existing sources are wrapped lambdas around fetch_feed().
-    The 3 new sources (NSE filings, Pulse RSS, PIB Defence) are added
-    as safe no-op stubs — they'll return [] until real implementations
-    are added. SignalBoy handles empty source returns gracefully.
+    Build {source_id: callable() -> list[dict]} for SignalBoy.
+    7 existing RSS feeds + 3 new sources (NSE filings/Pulse stubs + real PIB).
     """
     from src.beetle.news_fetcher import FEEDS, fetch_feed
 
     fetchers = {}
-
-    # ── Wrap existing 7 sources ──
     for source_id, url in FEEDS.items():
-        # Capture by default-arg trick to avoid late binding
         fetchers[source_id] = (
             lambda u=url, s=source_id: fetch_feed(u, s)
         )
 
-    # ── NEW v1 sources — placeholders, return empty list ──
-    # When real fetchers exist, replace these lambdas with the actual
-    # callables. SignalBoy's IngestionCache will still cache an empty
-    # response so it doesn't repeatedly hammer a broken endpoint.
-
     def _nse_filings_stub():
-        # TODO: implement NSE corporate filings fetcher in Phase 6E
         logger.debug("  [stub] nse_filings — returning empty list")
         return []
 
     def _pulse_zerodha_stub():
-        # TODO: implement Pulse RSS / Zerodha fetcher in Phase 6E
         logger.debug("  [stub] pulse_zerodha — returning empty list")
         return []
 
-    def _pib_defence_stub():
-        # PIB Defence RSS — try to fetch with feedparser; if it works,
-        # treat like a normal feed
+    def _pib_defence_fetcher():
         try:
-            import feedparser
-            import calendar
+            import feedparser, calendar
             from datetime import timezone
             from src.beetle.news_fetcher import _headline_id
 
@@ -115,8 +81,7 @@ def build_source_fetchers():
                 if published_parsed:
                     pub_ts = calendar.timegm(published_parsed)
                     pub_dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
-                    age_hours = (now - pub_dt).total_seconds() / 3600
-                    if age_hours > 48:
+                    if (now - pub_dt).total_seconds() / 3600 > 48:
                         continue
                 headlines.append({
                     "title":     title,
@@ -133,16 +98,20 @@ def build_source_fetchers():
 
     fetchers["nse_filings"]   = _nse_filings_stub
     fetchers["pulse_zerodha"] = _pulse_zerodha_stub
-    fetchers["pib_defence"]   = _pib_defence_stub
+    fetchers["pib_defence"]   = _pib_defence_fetcher
 
     return fetchers
 
 
 def main():
     print("\n" + "=" * 70)
-    print("  SIGNAL BOY — SHADOW MODE RUNNER")
-    print("  (real RSS · real FinBERT · real EntityShield)")
-    print("  Engine is NOT affected. Output → signals/queue_shadow.json")
+    print("  SIGNAL BOY — SHADOW MODE RUNNER v2")
+    print("  (real RSS · real FinBERT · real EntityShield · NewsArchiver)")
+    print("  Engine is NOT affected")
+    print(f"  Log: {log_path}")
+    print(f"  Queue snapshot: signals/queue_shadow.json")
+    print(f"  Queue history:  signals/history_shadow/YYYY-MM-DD_scans.jsonl")
+    print(f"  News archive:   I:/.../04_news_archive/YYYY-MM-DD_news.jsonl")
     print("=" * 70 + "\n")
 
     logger.info("─" * 60)
@@ -150,7 +119,6 @@ def main():
                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("─" * 60)
 
-    # ── Import REAL components ──
     logger.info("Loading real components...")
     from src.beetle.instrument_master import load_instruments
     from src.beetle.entity_shield     import filter_headlines
@@ -158,26 +126,24 @@ def main():
     from src.beetle.sector_heatmap    import get_heatmap
     from src.beetle.intelligence      import get_sector
     from src.beetle.signal_boy.signal_boy import SignalBoy
+    from src.beetle.signal_boy.news_archiver import NewsArchiver
 
     logger.info("  → Loading instrument master...")
     instruments = load_instruments()
     logger.info(f"    {len(instruments)} instruments loaded")
 
-    # Try to wire instrument_token lookup (used by 6D.4 universe manager)
     def instrument_token_lookup(symbol):
         data = instruments.get(symbol)
         if not data:
             return None
         return data.get("instrument_token") or data.get("token")
 
-    # Wire source fetchers
     logger.info("  → Wiring source fetchers...")
     source_fetchers = build_source_fetchers()
     logger.info(f"    {len(source_fetchers)} sources configured")
     for sid in source_fetchers:
         logger.info(f"      • {sid}")
 
-    # Sector heatmap provider — use mock if market closed
     def sector_heatmap_provider():
         try:
             return get_heatmap(use_mock_if_closed=True)
@@ -185,7 +151,14 @@ def main():
             logger.warning(f"  Heatmap fetch failed: {e}")
             return {}
 
-    # ── Construct SignalBoy in SHADOW mode ──
+    # ── NEW Option C — NewsArchiver wired ──
+    logger.info("  → Initialising NewsArchiver...")
+    news_archiver = NewsArchiver(
+        archive_dir=r"I:\01_Active_Projects\Morning_Beetle\04_news_archive",
+        fallback_dir="signals/news_archive",  # used if I: drive unavailable
+        enabled=True,
+    )
+
     logger.info("  → Constructing SignalBoy (shadow mode)...")
     sb = SignalBoy(
         source_fetchers          = source_fetchers,
@@ -198,9 +171,11 @@ def main():
         mode                     = "shadow",
         cache_path               = "signals/ingestion_cache.db",
         queue_path               = "signals/queue_shadow.json",
+        history_dir              = "signals/history_shadow",
+        news_archiver            = news_archiver,
     )
 
-    # ── Graceful shutdown handler ──
+    # Graceful shutdown
     shutdown_requested = {"flag": False}
 
     def handle_sigint(sig, frame):
@@ -213,13 +188,13 @@ def main():
         logger.info("✅ Signal Boy stopped cleanly. Goodbye.")
         sys.exit(0)
 
-    signal.signal(signal.SIGINT,  handle_sigint)
+    signal.signal(signal.SIGINT, handle_sigint)
     try:
         signal.signal(signal.SIGTERM, handle_sigint)
     except (ValueError, AttributeError):
-        pass  # SIGTERM not always available on Windows
+        pass
 
-    # ── Run one immediate scan, then start the loop ──
+    # Run one immediate scan
     logger.info("")
     logger.info("Running INITIAL scan to verify wiring...")
     try:
@@ -238,26 +213,19 @@ def main():
                     f"{s.get('headline', '')[:70]}"
                 )
         else:
-            logger.info("  No tickers passed the 0.60 composite threshold "
-                       "this scan.")
+            logger.info("  No tickers passed the 0.60 composite threshold.")
     except Exception as e:
         logger.error(f"  Initial scan FAILED: {e}", exc_info=True)
-        logger.error("  Check news_fetcher, finbert_scorer, entity_shield, "
-                    "and sector_heatmap modules.")
         sys.exit(1)
 
-    # ── Start background loop ──
     logger.info("")
     logger.info("Starting 15-minute scan loop...")
     logger.info("  Scans run between 09:01 and 14:30 IST")
-    logger.info("  Output → signals/queue_shadow.json (refreshed every 15 min)")
-    logger.info("  Log    → signal_boy_shadow.log")
     logger.info("  Press Ctrl+C to stop")
     logger.info("─" * 60)
 
     sb.start()
 
-    # ── Idle loop ──
     try:
         while sb.is_running() and not shutdown_requested["flag"]:
             import time
