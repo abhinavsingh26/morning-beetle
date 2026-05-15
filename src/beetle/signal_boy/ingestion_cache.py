@@ -100,11 +100,6 @@ SOURCE_REGISTRY = {
         "description": "Pulse RSS / Zerodha (curated)",
         "category":    "curated",
     },
-    "pib_defence": {
-        "ttl_seconds": 300,
-        "description": "PIB Defence — Ministry of Defence press releases",
-        "category":    "official_press",
-    },
 }
 
 

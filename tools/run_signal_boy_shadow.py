@@ -44,7 +44,19 @@ logger = logging.getLogger("signal_boy_shadow")
 def build_source_fetchers():
     """
     Build {source_id: callable() -> list[dict]} for SignalBoy.
-    7 existing RSS feeds + 3 new sources (NSE filings/Pulse stubs + real PIB).
+
+    Active sources (9 total):
+      • 7 real RSS feeds via news_fetcher.FEEDS
+      • nse_filings — STUB (placeholder, returns [] until Phase 6E fetcher built)
+      • pulse_zerodha — STUB (placeholder, returns [] until Phase 6E
+        crawl-based fetcher built; pulse.zerodha.com aggregates rich
+        Indian financial news, worth keeping the slot)
+
+    v9.7 (Day 9 EOD) — Removed PIB Defence:
+      Diagnostic confirmed PIB returns Hindi regardless of headers/Lang
+      parameter (all 5 variants tested). FinBERT can't score Hindi, and
+      defence catalysts (HAL/BEL/BDL/MAZDOCK/etc.) already flow through
+      google_business + livemint + ndtv in English with shorter latency.
     """
     from src.beetle.news_fetcher import FEEDS, fetch_feed
 
@@ -55,50 +67,22 @@ def build_source_fetchers():
         )
 
     def _nse_filings_stub():
+        """STUB — real fetcher deferred to Phase 6E."""
         logger.debug("  [stub] nse_filings — returning empty list")
         return []
 
     def _pulse_zerodha_stub():
-        logger.debug("  [stub] pulse_zerodha — returning empty list")
+        """
+        STUB — pulse.zerodha.com aggregates rich Indian financial news
+        from multiple sources. Real fetcher (crawl + HTML parse) deferred
+        to Phase 6E. Worth keeping the slot in source registry.
+        """
+        logger.debug("  [stub] pulse_zerodha — returning empty list "
+                    "(real fetcher pending Phase 6E)")
         return []
-
-    def _pib_defence_fetcher():
-        try:
-            import feedparser, calendar
-            from datetime import timezone
-            from src.beetle.news_fetcher import _headline_id
-
-            url = "https://www.pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3"
-            feed = feedparser.parse(url)
-            now = datetime.now(timezone.utc)
-            headlines = []
-            for entry in feed.entries[:20]:
-                title = entry.get("title", "").strip()
-                if not title or len(title) < 10:
-                    continue
-                published_parsed = entry.get("published_parsed")
-                published_str = entry.get("published", "")
-                if published_parsed:
-                    pub_ts = calendar.timegm(published_parsed)
-                    pub_dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
-                    if (now - pub_dt).total_seconds() / 3600 > 48:
-                        continue
-                headlines.append({
-                    "title":     title,
-                    "source":    "pib_defence",
-                    "published": published_str,
-                    "published_parsed": published_parsed,
-                    "id":        _headline_id(title),
-                })
-            logger.info(f"  pib_defence: {len(headlines)} headlines")
-            return headlines
-        except Exception as e:
-            logger.warning(f"  pib_defence fetch failed: {e}")
-            return []
 
     fetchers["nse_filings"]   = _nse_filings_stub
     fetchers["pulse_zerodha"] = _pulse_zerodha_stub
-    fetchers["pib_defence"]   = _pib_defence_fetcher
 
     return fetchers
 

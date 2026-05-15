@@ -1,3 +1,30 @@
+"""
+EntityShield v9.7 — Headline → Ticker resolution with layered defences.
+
+Version history (incremental, each builds on previous):
+  v9.0 — Base. Fuzzy + alias + dead zone + boost.
+  v9.1 — KNOWN_ALIASES longest-first; AMBIGUOUS_TICKERS pattern introduced.
+  v9.2 — Day 3 false positives: DEEPINDS, DISAQ, BFINVEST, Bajaj group.
+  v9.3 — Day 6 false positives: Ramco group, Aramco, Yes Bank noise.
+  v9.4 — Day 7 false positives: cattle futures, block deals, buzzing stocks.
+  v9.5 — Day 8 false positives: SUPREMEIND, BIRLACABLE, ADANIGREEN, SBIN
+         + SUPREME COURT, ADITYA BIRLA HEALTH, AD HOC NEWS GENERIC_TERMS.
+  v9.6 — Structural: _is_generic() moved to Step 0 (before alias check).
+         Multi-stock noise headlines now rejected before any alias match.
+  v9.7 — Day 9 fix:
+         + PUBLISHER_TRAILS stripping (NEW — primary defense)
+         + NDTV added to AMBIGUOUS_TICKERS (NEW — backup defense)
+         Prevents "X Q4 Results... - NDTV Profit" from matching NDTV.
+
+Resolution pipeline (find_ticker):
+  Step 0a: Strip publisher byline trail   ← v9.7
+  Step 0b: Reject generic-noise headlines ← v9.6 ordering
+  Step 1:  TATA MOTORS → TMCV special case
+  Step 2:  Known aliases (longest-first)
+  Step 3:  Fuzzy match
+  Step 4:  Short-ticker substring guard
+  Step 5:  Ambiguous-ticker context check
+"""
 import re
 import logging
 from thefuzz import fuzz
@@ -5,7 +32,7 @@ from src.beetle.instrument_master import load_instruments
 
 logger = logging.getLogger(__name__)
 
-# Keywords that boost confidence score
+# Boost confidence when these earnings/event keywords appear
 BOOST_KEYWORDS = [
     "DIVIDEND", "BONUS", "CONTRACT", "ACQUISITION", "ORDER WIN",
     "RESULTS BEAT", "QUARTERLY RESULTS", "Q1", "Q2", "Q3", "Q4",
@@ -18,24 +45,65 @@ DEAD_ZONE_MAX = +0.1
 
 MATCH_THRESHOLD = 85
 
-# Tickers ≤ this length must appear as a standalone word (regex \bTICKER\b)
+# Tickers ≤ this length must appear as standalone words (regex \bTICKER\b)
 SHORT_TICKER_LEN = 4
 
-# Known aliases — longer aliases checked first
+# ── v9.7 — Publisher trails to strip BEFORE matching ────────────
+# Day 9 NDTV bug: "Oil India Q4 Results - NDTV Profit" matched NDTV
+# (a 4-char ticker that passed the substring guard). We now strip
+# trailing " - PublisherName" / " | PublisherName" before any
+# matching happens, so publisher names never influence resolution.
+PUBLISHER_TRAILS = [
+    # Indian financial publishers
+    "NDTV PROFIT", "NDTV BUSINESS", "NDTV",
+    "MONEYCONTROL", "MONEY CONTROL",
+    "BUSINESS STANDARD", "BUSINESSLINE", "BUSINESS LINE",
+    "LIVEMINT", "LIVE MINT", "MINT",
+    "ECONOMIC TIMES", "ET NOW", "ET MARKETS",
+    "FINANCIAL EXPRESS", "FE BUREAU", "FE MARKETS",
+    "BLOOMBERG QUINT", "BQ PRIME", "BQ",
+    "CNBC TV18", "CNBC-TV18", "CNBC",
+    "ZEE BUSINESS", "ZEEBIZ",
+    "OUTLOOK BUSINESS", "OUTLOOK MONEY",
+    "FORBES INDIA", "FORTUNE INDIA",
+    "THE HINDU BUSINESSLINE", "THE HINDU",
+    "INDIAN EXPRESS",
+    "FIRSTPOST",
+    "EQUITYMASTER",
+    "GOODRETURNS",
+    "UPSTOX",
+    "SCANX.TRADE", "SCANX",
+    "WHALESBOOK",
+    "AD HOC NEWS",
+    # International publishers
+    "REUTERS", "BLOOMBERG", "REUTERS POLL",
+    "FINANCIAL TIMES", "FT",
+    "WALL STREET JOURNAL", "WSJ",
+    "MARKETWATCH",
+    "INVESTING.COM", "INVESTING COM",
+    "YAHOO FINANCE",
+    "SEEKING ALPHA",
+    "BARRON'S", "BARRONS",
+]
+# Sort longest-first so "NDTV PROFIT" strips before "NDTV"
+PUBLISHER_TRAILS = sorted(PUBLISHER_TRAILS, key=len, reverse=True)
+
+
+# ── KNOWN_ALIASES — checked longest-first in find_ticker ────────
 KNOWN_ALIASES = {
-    # ── DISAMBIGUATION (specific phrases checked before generic) ──
+    # Disambiguation (specific phrases before generic terms)
     "KOTAK MAHINDRA BANK":   "KOTAKBANK",
     "KOTAK MAHINDRA":        "KOTAKBANK",
     "ASIAN ENERGY SERVICES": "ASIANENE",
     "ASIAN ENERGY":          "ASIANENE",
-    # ── Bajaj group disambiguation (v9.2) ────────────────────────
+    # Bajaj group disambiguation (v9.2)
     "BAJAJ AUTO LTD":        "BAJAJ-AUTO",
     "BAJAJ AUTO":            "BAJAJ-AUTO",
     "BAJAJ FINANCE":         "BAJFINANCE",
     "BAJAJ FINSERV":         "BAJAJFINSV",
     "BAJAJ HOLDINGS":        "BAJAJHLDNG",
     "BAJAJ HIND SUGAR":      "BAJAJHIND",
-    # ── TATA (specific before general) ───────────────────────────
+    # TATA group (specific before general)
     "TATA CONSULTANCY":  "TCS",
     "TATA CHEMICALS":    "TATACHEM",
     "TATA CONSUMER":     "TATACONSUM",
@@ -45,7 +113,7 @@ KNOWN_ALIASES = {
     "TATA ELXSI":        "TATAELXSI",
     "TATA COMM":         "TATACOMM",
     "TATAMOTORS":        "TMCV",
-    # ── Banks ────────────────────────────────────────────────────
+    # Banks
     "HINDUSTAN UNILEVER":  "HINDUNILVR",
     "BANK OF MAHARASHTRA": "MAHABANK",
     "BHARAT ELECTRONICS":  "BEL",
@@ -62,7 +130,7 @@ KNOWN_ALIASES = {
     "STATE BANK OF INDIA": "SBIN",
     "KOTAK":               "KOTAKBANK",
     "SBI":                 "SBIN",
-    # ── IT ───────────────────────────────────────────────────────
+    # IT
     "HCL TECHNOLOGIES":    "HCLTECH",
     "TECH MAHINDRA":       "TECHM",
     "LTIMINDTREE":         "LTIM",
@@ -77,31 +145,31 @@ KNOWN_ALIASES = {
     "LTI":                 "LTIM",
     "SASKEN":              "SASKEN",
     "SASKEN TECHNOLOGIES": "SASKEN",
-    # ── Pharma ───────────────────────────────────────────────────
+    # Pharma
     "SUN PHARMA":  "SUNPHARMA",
     "DR REDDY":    "DRREDDY",
     "CIPLA":       "CIPLA",
     "DIVIS":       "DIVISLAB",
-    # ── Energy/PSU ───────────────────────────────────────────────
-    "ADANI ENTERPRISES": "ADANIENT",
-    "ADANI PORTS":       "ADANIPORTS",
-    "ADANI POWER":       "ADANIPOWER",
-    "ADANI GREEN":       "ADANIGREEN",
+    # Energy/PSU
+    "ADANI ENTERPRISES":  "ADANIENT",
+    "ADANI PORTS":        "ADANIPORTS",
+    "ADANI POWER":        "ADANIPOWER",
+    "ADANI GREEN":        "ADANIGREEN",
     "ADANI GREEN ENERGY": "ADANIGREEN",
-    "POWER GRID":        "POWERGRID",
-    "RELIANCE":          "RELIANCE",
+    "POWER GRID":         "POWERGRID",
+    "RELIANCE":           "RELIANCE",
     "ONGC":               "ONGC",
     "NTPC":               "NTPC",
-    # ── Auto ─────────────────────────────────────────────────────
-    "HERO MOTO":         "HEROMOTOCO",
-    "HERO MOTOCORP":     "HEROMOTOCO",
-    "MAHINDRA & MAHINDRA": "M&M",     # v9.5 — proper M&M disambiguation
-    "MAHINDRA":          "M&M",
-    "MARUTI":            "MARUTI",
-    "EICHER":            "EICHERMOT",
-    "ASHOK LEYLAND":     "ASHOKLEY",
-    "ATHER ENERGY":      "ATHERENERG",
-    # ── FMCG ─────────────────────────────────────────────────────
+    # Auto
+    "HERO MOTO":           "HEROMOTOCO",
+    "HERO MOTOCORP":       "HEROMOTOCO",
+    "MAHINDRA & MAHINDRA": "M&M",
+    "MAHINDRA":            "M&M",
+    "MARUTI":              "MARUTI",
+    "EICHER":              "EICHERMOT",
+    "ASHOK LEYLAND":       "ASHOKLEY",
+    "ATHER ENERGY":        "ATHERENERG",
+    # FMCG
     "NESTLE":              "NESTLEIND",
     "NESTLÉ":              "NESTLEIND",
     "ASIAN PAINTS":        "ASIANPAINT",
@@ -113,7 +181,7 @@ KNOWN_ALIASES = {
     "GODREJ PROPERTIES":   "GODREJPROP",
     "PIDILITE":            "PIDILITIND",
     "PIDILITE INDUSTRIES": "PIDILITIND",
-    # ── Metal ────────────────────────────────────────────────────
+    # Metal
     "JSW STEEL":  "JSWSTEEL",
     "HINDALCO":   "HINDALCO",
     "ULTRATECH":  "ULTRACEMCO",
@@ -121,7 +189,7 @@ KNOWN_ALIASES = {
     "GRASIM":     "GRASIM",
     "COAL INDIA": "COALINDIA",
     "COALINDIA":  "COALINDIA",
-    # ── Defence ──────────────────────────────────────────────────
+    # Defence
     "MAZAGON DOCK":          "MAZDOCK",
     "COCHIN SHIPYARD":       "COCHINSHIP",
     "GARDEN REACH":          "GRSE",
@@ -131,30 +199,29 @@ KNOWN_ALIASES = {
     "HAL":                   "HAL",
     "HINDUSTAN AERONAUTICS": "HAL",
     "BEL":                   "BEL",
-    # ── Fertilizers / Specific Chemicals ─────────────────────────
-    "SOUTHERN PETROCHEMICAL":      "SPIC",
-    "FERTILIZERS AND CHEMICALS":   "FACT",
-    "FACT KOCHI":                  "FACT",
-    # ── Industrial / Smaller specific names (v9.2) ───────────────
-    "DEEP INDUSTRIES":       "DEEPINDS",
-    "DEEP INDS":             "DEEPINDS",
-    "DISA INDIA":            "DISAQ",
-    "BF INVESTMENT":         "BFINVEST",
-    "BHARAT FORGE":          "BHARATFORG",
-    # ── Ramco group disambiguation (v9.3) ────────────────────────
-    "RAMCO INDUSTRIES":      "RAMCOIND",
-    "RAMCO CEMENTS":         "RAMCOCEM",
-    "RAMCO CEMENT":          "RAMCOCEM",
-    "RAMCO SYSTEMS":         "RAMCOSYS",
-    # ── NEW v9.5 — Supreme Industries disambiguation ─────────────
-    "SUPREME INDUSTRIES":    "SUPREMEIND",
-    "SUPREME PETROCHEM":     "SUPPETRO",
-    # ── NEW v9.5 — Birla group disambiguation ────────────────────
-    "BIRLA CABLE":           "BIRLACABLE",
-    "ADITYA BIRLA CAPITAL":  "ABCAPITAL",
-    "ADITYA BIRLA FASHION":  "ABFRL",
-    "GRASIM":                "GRASIM",
-    # ── New Age ──────────────────────────────────────────────────
+    # Fertilizers / Specific Chemicals
+    "SOUTHERN PETROCHEMICAL":    "SPIC",
+    "FERTILIZERS AND CHEMICALS": "FACT",
+    "FACT KOCHI":                "FACT",
+    # Industrial / Smaller (v9.2)
+    "DEEP INDUSTRIES":  "DEEPINDS",
+    "DEEP INDS":        "DEEPINDS",
+    "DISA INDIA":       "DISAQ",
+    "BF INVESTMENT":    "BFINVEST",
+    "BHARAT FORGE":     "BHARATFORG",
+    # Ramco group disambiguation (v9.3)
+    "RAMCO INDUSTRIES": "RAMCOIND",
+    "RAMCO CEMENTS":    "RAMCOCEM",
+    "RAMCO CEMENT":     "RAMCOCEM",
+    "RAMCO SYSTEMS":    "RAMCOSYS",
+    # Supreme group disambiguation (v9.5)
+    "SUPREME INDUSTRIES": "SUPREMEIND",
+    "SUPREME PETROCHEM":  "SUPPETRO",
+    # Birla group disambiguation (v9.5)
+    "BIRLA CABLE":          "BIRLACABLE",
+    "ADITYA BIRLA CAPITAL": "ABCAPITAL",
+    "ADITYA BIRLA FASHION": "ABFRL",
+    # New Age
     "POLICYBAZAAR":  "POLICYBZR",
     "INDIAN HOTELS": "INDHOTEL",
     "DELHIVERY":     "DELHIVERY",
@@ -166,6 +233,8 @@ KNOWN_ALIASES = {
     "NETWEB":        "NETWEB",
 }
 
+
+# ── GENERIC_TERMS — if headline contains any of these, reject ───
 GENERIC_TERMS = [
     # Market-wide
     "SENSEX", "NIFTY", "MARKET", "INDICES", "INDEX",
@@ -183,22 +252,20 @@ GENERIC_TERMS = [
     "COGNIZANT",
     "MIDEAST TENSIONS", "MIDEAST", "MIDDLE EAST",
     "CHINA FIREWORK", "CHINA EXPLOSION", "XI JINPING",
-    # ── v9.2 — foreign tech / PE / generic India macro ───────────
+    # Foreign tech / PE / generic India macro (v9.2)
     "DEEPMIND", "GOOGLE DEEPMIND", "ALPHABET",
     "PENTAGON", "PENTAGON AI",
     "PE FIRM", "PRIVATE EQUITY", "VC FIRM", "VENTURE CAPITAL",
     "PE FUND", "VENTURE FUND",
     "INDIAN COMPANIES ANNOUNCE", "CREATE 1500 JOBS",
     "INDIAN COMPANIES INVEST",
-    "RECOGNIZE",                # the US PE firm name
+    "RECOGNIZE",
     "1.7 BILLION FUND",
     "NICHE IT SERVICE",
-    # ── v9.3 — Day 6 false positive filters ──────────────────────
-    # Saudi Aramco / oil giant
+    # Day 6 false positives (v9.3)
     "ARAMCO", "SAUDI ARAMCO", "SAUDI OIL",
     "OIL GIANT", "OIL EXPORTS", "STRAIT OF HORMUZ",
     "SAUDI ARABIA", "GULF OIL",
-    # Yes Bank / generic India lender noise
     "YES BANK LTD", "INDIA-FOCUSED LENDER", "AD HOC NEWS",
     "INE528G01035",
     "DIGITAL PUSH",
@@ -241,30 +308,25 @@ GENERIC_TERMS = [
     "LIVESTOCK", "PORK FUTURES", "COMMODITY FUTURES",
     "BLOCK DEAL", "GROWW", "EARLY INVESTORS REAP",
     "STARTUP IPO", "498 MILLION",
-    "BUZZING STOCKS", "BUZZING STOCK", "STOCKS IN FOCUS", "STOCKS TO WATCH",
+    "BUZZING STOCKS", "BUZZING STOCK",
+    "STOCKS IN FOCUS", "STOCKS TO WATCH",
     "TOP BUZZING STOCKS",
-    # ── NEW v9.5 — Day 8 false positives ─────────────────────────
-    # "AD HOC NEWS" stock-mention noise (M&M, ADANIGREEN today)
+    # Day 8 false positives (v9.5)
     "TECHNICAL SIGNALS", "AMID TECHNICAL", "DROPS 2.54",
-    "INE101A01026", "INE364U01010",  # ISIN codes in headlines
-    # Supreme Court case fooled SUPREMEIND
+    "INE101A01026", "INE364U01010",
     "SUPREME COURT", "MOVES SUPREME COURT", "RANI KAPUR",
     "FAMILY TRUST", "TRUST-LINKED BOARD",
-    # Aditya Birla Health (not Birla Cable)
     "ADITYA BIRLA HEALTH", "BIRLA HEALTH",
     "WELLNESS INCENTIVES", "CLAIMS RATIOS",
-    # Syrma SGS named someone else
     "SYRMA SGS", "JASBIR SINGH GUJRAL",
-    # HG Infra mention in Sasken multi-stock headline
     "HG INFRA",
-    # Generic earnings calendar noise
     "100+ FIRMS TO DECLARE", "FIRMS TO DECLARE EARNINGS",
-    "DIXON TECH", "MOBIKWIK",  # mentioned alongside other Q4 calendar
+    "DIXON TECH", "MOBIKWIK",
 ]
 
-# Tickers requiring specific context word
+
+# ── AMBIGUOUS_TICKERS — context-required matches ────────────────
 AMBIGUOUS_TICKERS = {
-    # Existing
     "ASIANENE":   ["ENERGY", "OIL", "GAS", "DRILLING", "ASIAN ENERGY"],
     "M&M":        ["MAHINDRA &", "M&M", "MAHINDRA AUTO",
                    "MAHINDRA SUV", "TRACTORS", "MAHINDRA Q",
@@ -291,7 +353,7 @@ AMBIGUOUS_TICKERS = {
     "ATHERENERG": ["ATHER ENERGY", "ATHER 450", "ATHER SCOOTER",
                    "ATHERENERG", "ATHER IPO"],
     "GATECHDVR":  ["GACM TECHNOLOGIES", "GACM", "GATECHDVR"],
-    # ── v9.2 — Day 3 false positives ─────────────────────────────
+    # v9.2 — Day 3 false positives
     "DEEPINDS":   ["DEEP INDUSTRIES", "DEEP INDS",
                    "DEEPINDS", "OILFIELD SERVICES"],
     "DISAQ":      ["DISA INDIA", "DISA TECHNOLOGIES",
@@ -301,35 +363,38 @@ AMBIGUOUS_TICKERS = {
     "BAJFINANCE": ["BAJAJ FINANCE", "BAJFINANCE",
                    "BAJAJ FINSERV", "CONSUMER LOAN",
                    "EMI", "NBFC"],
-    # ── v9.3 — Day 6 false positives ─────────────────────────────
+    # v9.3 — Day 6 false positives
     "RAMCOIND":   ["RAMCO INDUSTRIES", "RAMCOIND",
                    "ASBESTOS", "FIBRE CEMENT", "CEMENT SHEET",
                    "RAMCO LTD", "RAMCO GROUP"],
     "DUGLOBAL-SM": ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
                     "DUGLOBAL", "DUDIGITAL GLOBAL"],
-    "DUDIGITAL":   ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
-                    "DUDIGITAL GLOBAL"],
-    # ── NEW v9.5 — Day 8 false positives ─────────────────────────
-    # SUPREMEIND fooled by "Supreme Court" headline
-    "SUPREMEIND":  ["SUPREME INDUSTRIES", "SUPREMEIND",
-                    "PVC PIPE", "PVC PIPES", "POLYMER",
-                    "PLASTIC PIPE", "BUILDING PRODUCTS",
-                    "INDUSTRIAL PRODUCTS"],
-    # BIRLACABLE fooled by "Aditya Birla Health" headline
-    "BIRLACABLE":  ["BIRLA CABLE", "BIRLACABLE",
-                    "OPTICAL FIBRE", "TELECOM CABLE",
-                    "FIBRE OPTIC", "CABLE LTD",
-                    "BIRLA ERICSSON"],
-    # ADANIGREEN fooled by "AD HOC NEWS" pattern with generic stock dip
-    "ADANIGREEN":  ["ADANI GREEN", "ADANIGREEN",
-                    "ADANI GREEN ENERGY", "RENEWABLE",
-                    "SOLAR", "WIND ENERGY", "GREEN HYDROGEN"],
-    # SBIN fooled by "Syrma SGS" headline (name-fuzzy noise)
-    # SBIN requires actual SBI / State Bank context
-    "SBIN":        ["SBI", "STATE BANK", "STATE BANK OF INDIA",
-                    "SBIN", "SBI Q", "SBI BANK",
-                    "PSU BANK SBI", "SBI CARDS",
-                    "SBI RESULTS", "SBI MUTUAL"],
+    "DUDIGITAL":  ["DUDIGITAL", "DU DIGITAL", "DU GLOBAL",
+                   "DUDIGITAL GLOBAL"],
+    # v9.5 — Day 8 false positives
+    "SUPREMEIND": ["SUPREME INDUSTRIES", "SUPREMEIND",
+                   "PVC PIPE", "PVC PIPES", "POLYMER",
+                   "PLASTIC PIPE", "BUILDING PRODUCTS",
+                   "INDUSTRIAL PRODUCTS"],
+    "BIRLACABLE": ["BIRLA CABLE", "BIRLACABLE",
+                   "OPTICAL FIBRE", "TELECOM CABLE",
+                   "FIBRE OPTIC", "CABLE LTD",
+                   "BIRLA ERICSSON"],
+    "ADANIGREEN": ["ADANI GREEN", "ADANIGREEN",
+                   "ADANI GREEN ENERGY", "RENEWABLE",
+                   "SOLAR", "WIND ENERGY", "GREEN HYDROGEN"],
+    "SBIN":       ["SBI", "STATE BANK", "STATE BANK OF INDIA",
+                   "SBIN", "SBI Q", "SBI BANK",
+                   "PSU BANK SBI", "SBI CARDS",
+                   "SBI RESULTS", "SBI MUTUAL"],
+    # v9.7 — Day 9 false positive (NDTV publisher byline)
+    # NDTV is both a 4-char ticker AND a major Indian publisher.
+    # Backup defense — primary defense is PUBLISHER_TRAILS stripping.
+    "NDTV":       ["NDTV LTD", "NDTV Q", "NDTV RESULTS",
+                   "NEW DELHI TELEVISION", "NDTV NETWORK",
+                   "NDTV BROADCASTING", "NDTV SHARES",
+                   "NDTV STOCK", "NDTV BUYBACK",
+                   "NDTV EARNINGS", "NDTV REVENUE"],
 }
 
 
@@ -344,6 +409,33 @@ def _keyword_boost(headline: str) -> float:
 def _clean_headline(headline: str) -> str:
     headline = re.sub(r'[^\w\s]', ' ', headline)
     return headline.upper().strip()
+
+
+def _strip_publisher_trail(headline: str) -> str:
+    """
+    v9.7 — Strip trailing " - Publisher" / " | Publisher" if present.
+
+    Day 9 NDTV bug: "Oil India Q4 Results - NDTV Profit" matched NDTV.
+    We strip the publisher byline before any matching so publisher
+    names never influence ticker resolution.
+
+    Only the LAST separator-trail is checked, not mid-text mentions.
+    Headlines like "NDTV Q4 results" (no publisher trail) pass through
+    unchanged so legitimate NDTV mentions still work.
+    """
+    if not headline:
+        return headline
+    # Separators: plain hyphen, pipe, em-dash, en-dash
+    for separator in [" - ", " | ", " — ", " – "]:
+        if separator in headline:
+            head, tail = headline.rsplit(separator, 1)
+            tail_upper = tail.strip().upper()
+            for publisher in PUBLISHER_TRAILS:
+                # Match: tail starts with publisher
+                # (handles " - NDTV Profit Updated 09:00")
+                if tail_upper.startswith(publisher):
+                    return head.strip()
+    return headline
 
 
 def _is_generic(headline: str) -> bool:
@@ -375,27 +467,30 @@ def _is_short_ticker_substring_only(symbol: str,
 def find_ticker(headline: str, instruments: dict,
                 threshold: int = MATCH_THRESHOLD) -> dict | None:
     """
-    Match headline to ticker through layered defences:
-    Step 0: Generic-headline rejection (v9.6 — moved earlier).
-    Step 1: TATA MOTORS → TMCV special case.
-    Step 2: Known aliases (longest first).
-    Step 3: Fuzzy match.
-    Step 4: Short-ticker substring guard.
-    Step 5: Ambiguous-ticker context check.
+    Match headline to ticker through layered defences.
+
+    Step 0a: Strip publisher byline trail (v9.7).
+    Step 0b: Reject generic-noise headlines (v9.6 ordering).
+    Step 1:  TATA MOTORS → TMCV special case.
+    Step 2:  Known aliases (longest-first), with ambiguity check.
+    Step 3:  Fuzzy match against all instruments.
+    Step 4:  Short-ticker substring guard.
+    Step 5:  Ambiguous-ticker context check on fuzzy match.
     """
+    if not headline:
+        return None
+
+    # ── Step 0a — v9.7 — Strip publisher trail ─────────────────
+    headline = _strip_publisher_trail(headline)
+
     headline_upper = headline.upper()
     cleaned = _clean_headline(headline)
 
-    # ── Step 0 — Generic rejection (v9.6 — moved BEFORE alias check) ──
-    # Prevents multi-stock noise headlines from matching real tickers
-    # via the alias path. Example: "Q4 Results Today: Dixon Tech, Tata
-    # Power, MobiKwik, Dr Reddy's Among 100+ Firms To Declare Earnings"
-    # was matching TATAPOWER via the "TATA POWER" alias before generic
-    # terms could intercept it.
+    # ── Step 0b — v9.6 — Generic rejection (before aliases) ────
     if _is_generic(headline):
         return None
 
-    # Special: TATA MOTORS → TMCV
+    # ── Step 1 — TATA MOTORS → TMCV special case ───────────────
     if "TATA MOTORS" in headline_upper and "TMCV" in instruments:
         boost = _keyword_boost(headline)
         return {
@@ -406,7 +501,7 @@ def find_ticker(headline: str, instruments: dict,
             "boosted":    boost > 0
         }
 
-    # Step 1 — Known aliases (longest first)
+    # ── Step 2 — Known aliases (longest first) ─────────────────
     for alias, sym in sorted(KNOWN_ALIASES.items(),
                               key=lambda x: len(x[0]), reverse=True):
         if alias.upper() in headline_upper:
@@ -423,10 +518,9 @@ def find_ticker(headline: str, instruments: dict,
                     "boosted":    boost > 0
                 }
 
-    # Step 2 — Fuzzy match
+    # ── Step 3 — Fuzzy match ───────────────────────────────────
     best_score = 0
     best_match = None
-
     for sym, data in instruments.items():
         anchor = data["search_anchor"]
         if not anchor or len(anchor) < 4:
@@ -443,12 +537,12 @@ def find_ticker(headline: str, instruments: dict,
 
     matched_symbol = best_match["symbol"]
 
-    # Step 3 — Short-ticker substring guard
+    # ── Step 4 — Short-ticker substring guard ──────────────────
     if _is_short_ticker_substring_only(matched_symbol, headline_upper):
         logger.debug(f"  Skipping short-ticker substring match: {matched_symbol}")
         return None
 
-    # Step 4 — Ambiguous-ticker context check
+    # ── Step 5 — Ambiguous-ticker context check ────────────────
     if _is_ambiguous_match(matched_symbol, headline_upper):
         logger.debug(f"  Skipping ambiguous fuzzy match: {matched_symbol}")
         return None
@@ -489,9 +583,9 @@ if __name__ == "__main__":
 
     instruments = load_instruments()
 
-    # Combined test set: Days 1+2+3+6+7+8
+    # Combined test set: Days 1+2+3+6+7+8+9
     test_cases = [
-        # ── True positives (should match) ────────────────────────
+        # ── True positives (must still match) ────────────────────
         ("Nestlé India shares jump 6% to hit 52-week high",                "NESTLEIND"),
         ("HDFC Bank Q3 beats estimates, NII up 15%",                       "HDFCBANK"),
         ("Tata Motors receives large order from defence ministry",         "TMCV"),
@@ -511,7 +605,7 @@ if __name__ == "__main__":
         ("Bajaj Finance NBFC posts record consumer loan growth",           "BAJFINANCE"),
         ("Deep Industries wins oilfield services contract",                "DEEPINDS"),
 
-        # ── Day 1 false positives (already fixed) ────────────────
+        # ── Day 1 false positives ────────────────────────────────
         ("RBI maintains hawkish stance on inflation",                      None),
         ("Bitcoin Tops $80,000 as Asian Stocks Rise",                      None),
         ("CEO Greg Abel moves to assure Berkshire shareholders",           None),
@@ -542,10 +636,9 @@ if __name__ == "__main__":
         ("CME cattle futures pare losses after falling on US beef import plan", None),
         ("Early investors in Groww set to reap up to $498 million in block deal", None),
         ("NIFTY50 at 23,949, SENSEX down 838 pts in afternoon session; SBI, Swiggy, Canara Bank, Titan Company among buzzing stocks - Upstox", None),
-        # Day 7 true positive must still pass
         ("Canara Bank: Motilal Oswal Trims Target Price After Q4 Results, Cites Tepid NIM Guidance", "CANBK"),
 
-        # ── NEW v9.5 — Day 8 false positives ─────────────────────
+        # ── Day 8 false positives ────────────────────────────────
         ("Mahindra & Mahindra Ltd stock (INE101A01026): Drops 2.54% amid technical signals - AD HOC NEWS", None),
         ("Adani Green Energy Ltd stock (INE364U01010): Share price dips 1.10% to ?1,350 - AD HOC NEWS", None),
         ("Syrma SGS Technology expects 30% revenue growth in tricky FY27, MD Jasbir Singh Gujral says", None),
@@ -554,25 +647,42 @@ if __name__ == "__main__":
         ("Sasken Technologies Q4 FY26 Results | HG Infra Secures Large Infrastructure Contract | Top Buzzing Stocks Today - Equitymaster", None),
         ("Q4FY26 Results Today: Dixon Tech, Tata Power, One MobiKwik, Dr Reddy's Among 100+ Firms To Declare Earnings - NDTV Profit", None),
 
-        # ── NEW v9.5 — Day 8 true positives (must still match) ───
+        # ── Day 8 true positives ─────────────────────────────────
         ("Indian Hotels Q4 Results: Profit, Revenue Rise Over 14%; Dividend Declared - NDTV Profit", "INDHOTEL"),
         ("Bharti Airtel Q4 preview: strong user additions but flat Arpu may temper growth", "BHARTIARTL"),
+
+        # ── NEW Day 9 false positives (v9.7) ─────────────────────
+        # The exact headline that triggered the bogus NDTV trade:
+        ("Oil India Q4 Results: Profit Rockets 76%, Revenue Tops Rs 10,000 Crore; Dividend Declared - NDTV Profit", None),
+        ("Bank Stocks Mixed Today - Moneycontrol",                          None),
+
+        # ── NEW Day 9 true positives (NDTV-the-company must still match) ──
+        ("NDTV Q4 Results: New Delhi Television posts net loss",            "NDTV"),
     ]
 
-    print("\n── EntityShield v9.5 Test ──")
+    print("\n── EntityShield v9.7 Test ──")
     print(f"{'Result':<7} {'Got':<14} {'Expected':<14} Headline")
     print("-" * 115)
 
     correct = 0
+    failures = []
     for headline, expected in test_cases:
         match = find_ticker(headline, instruments)
         actual = match["symbol"] if match else None
         ok = actual == expected
         if ok:
             correct += 1
+        else:
+            failures.append((headline, expected, actual))
         status = "✅" if ok else "❌"
         a = actual if actual else "—"
         e = expected if expected else "—"
         print(f"{status:<7} {a:<14} {e:<14} {headline[:75]}")
 
     print(f"\n{correct}/{len(test_cases)} correct matches")
+    if failures:
+        print(f"\n── FAILURES ({len(failures)}) ──")
+        for headline, expected, actual in failures:
+            print(f"  Expected: {expected}  Got: {actual}")
+            print(f"  Headline: {headline}")
+            print()

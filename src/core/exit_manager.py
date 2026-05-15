@@ -192,6 +192,34 @@ class ExitManager:
                 exit_price = pos.entry_price
                 source = "entry_fallback"
 
+            # ── v9.2 SANITY GUARD (Day 9 bug protection) ──────────────
+            # If exit_price differs from entry by more than 8%, the price
+            # is almost certainly a stale tick from a different symbol
+            # leaking through. Refuse the booking and fall back to
+            # entry_price (records zero P&L instead of garbage).
+            #
+            # Real intraday moves on stable stocks rarely exceed 8% in a
+            # single session. This is conservative — even circuit-limit
+            # stocks (5%/20%) won't trigger false positives because the
+            # broker's MIS would have force-squared earlier on margin.
+            if exit_price and pos.entry_price:
+                drift_pct = abs(exit_price - pos.entry_price) / pos.entry_price
+                if drift_pct > 0.08:
+                    logger.error(
+                        f"  ⚠️  SANITY GUARD: {symbol} exit_price {exit_price:.2f} "
+                        f"differs from entry {pos.entry_price:.2f} by "
+                        f"{drift_pct*100:.1f}% via {source} — refusing booking, "
+                        f"using entry_price (zero P&L recorded)"
+                    )
+                    self.trade_db.log_system(
+                        "ERROR", "KILL_SWITCH_SANITY_GUARD",
+                        f"{symbol} exit drift {drift_pct*100:.1f}% via {source}; "
+                        f"refused {exit_price:.2f}, used entry {pos.entry_price:.2f}"
+                    )
+                    exit_price = pos.entry_price
+                    source = "sanity_guard_entry"
+            # ─────────────────────────────────────────────────────────
+
             logger.warning(f"  ⚡ Force-closing {symbol} @ {exit_price:.2f} "
                           f"(source: {source})")
             self._close_position(symbol, exit_price, "KILL_SWITCH_TIMER")
@@ -439,18 +467,30 @@ class ExitManager:
         """
         Event-driven kill switch (only fires if ticks are flowing).
         Time-based fallback handled by _kill_switch_timer thread.
+
+        v9.2 FIX (Day 9 bug): previously called _close_position(symbol, ltp,...)
+        in a loop using the SINGLE ltp from the triggering tick. That caused
+        all open positions to be booked at the same (wrong) price.
+        Example: at 15:15:00.161 a ZYDUSLIFE tick @ 991.90 fired the kill
+        switch, and RITES was also closed at 991.90 (real price ~213.85)
+        — bogus +₹54,588 P&L.
+
+        Fix: delegate to _fire_time_based_kill_switch(), which already does
+        the correct per-position price resolution (REST quote → last_known_ltp
+        → entry_price fallback chain), AND adds a sanity guard against
+        wildly-off prices.
         """
         now = datetime.now().time()
         if now >= KILL_SWITCH and not self.kill_fired:
-            self.kill_fired = True
-            symbols = list(self.positions.keys())
+            with self._lock:
+                symbols = list(self.positions.keys())
             logger.warning(f"⚡ KILL SWITCH (event-driven): closing {len(symbols)} positions")
             self.trade_db.log_system(
                 "WARNING", "KILL_SWITCH",
                 f"Event-driven kill switch firing at 15:15"
             )
-            for symbol in symbols:
-                self._close_position(symbol, ltp, "KILL_SWITCH")
+            # Reuse the per-position fallback logic. It sets kill_fired internally.
+            self._fire_time_based_kill_switch()
             return True
         return False
 
