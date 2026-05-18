@@ -1,3 +1,23 @@
+"""
+RSIMomentum strategy (S2) — v9.4 with Supertrend regime filter.
+
+v9.4 change (Day 11 EOD, May 18 2026):
+    Day 11 showed 0W/4L (−₹493) on this strategy alone. Analysis of Stage 5a
+    (28 trades) revealed:
+      - 10–30 min after open: 18 trades, 27.8% win rate, −₹700 total
+      - 30–60 min after open:  6 trades, 83.3% win rate, +₹1,062 total
+      - SL exits: 16/16 losses (0% win)
+      - TRAIL exits: 7/7 wins (100% win)
+    RSI(14)/ADX(14) crossover frequently fires AFTER the move has played out
+    on choppy/mean-reverting days, catching the reversal tail.
+
+    Fix: Supertrend(10, 3) regime filter as a third gate.
+      - BUY only fires when Supertrend is GREEN (uptrend in progress)
+      - SELL only fires when Supertrend is RED (downtrend in progress)
+    Expected effect: filters out ~50-60% of entries on choppy days,
+    preserves nearly all trending-day entries.
+    Trade count drops, per-trade win rate rises.
+"""
 import logging
 import numpy as np
 import pandas as pd
@@ -5,6 +25,7 @@ import talib
 from datetime import datetime, time
 from src.strategies.base import Strategy
 from src.core.events import MarketEvent, SignalEvent
+from src.core.indicators import compute_supertrend
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +37,11 @@ RSI_SELL      = 45    # RSI crosses below 45 → SELL
 ADX_MIN       = 25    # ADX must be ≥ 25 (trend must be strong)
 CANDLE_INTERVAL = 5   # 5-minute candles
 SOFT_OPEN_GATE = time(9, 20)   # No RSI signals before 09:20 AM
+
+# v9.4 — Supertrend regime filter
+USE_SUPERTREND_FILTER = True
+SUPERTREND_PERIOD     = 10
+SUPERTREND_MULTIPLIER = 3.0
 
 
 class RSIMomentum(Strategy):
@@ -70,6 +96,43 @@ class RSIMomentum(Strategy):
         logger.debug(f"  ADX: {latest_adx:.2f} ≥ {ADX_MIN} — {'PASS' if passes else 'FAIL'}")
         return passes
 
+    def _check_supertrend_filter(self, direction: str,
+                                  highs: np.ndarray,
+                                  lows: np.ndarray,
+                                  closes: np.ndarray) -> tuple[bool, str]:
+        """
+        v9.4 — Supertrend regime filter.
+
+        Returns (pass, regime_label) tuple.
+          - BUY signal needs GREEN (uptrend regime, direction=+1)
+          - SELL signal needs RED (downtrend regime, direction=-1)
+
+        If insufficient data → fail-open (pass=True) with note "INSUFFICIENT".
+        Insufficient data only happens in the first 10 candles, by which
+        time the strategy hasn't fired yet anyway (RSI needs ~15 candles).
+        """
+        if not USE_SUPERTREND_FILTER:
+            return True, "DISABLED"
+        if len(closes) < SUPERTREND_PERIOD + 2:
+            return True, "INSUFFICIENT"
+        _, dir_arr = compute_supertrend(
+            highs, lows, closes,
+            period=SUPERTREND_PERIOD,
+            multiplier=SUPERTREND_MULTIPLIER
+        )
+        latest_dir = dir_arr[-1]
+        if np.isnan(latest_dir):
+            return True, "INSUFFICIENT"
+
+        regime = "GREEN" if latest_dir == 1 else "RED"
+        if direction == "BUY":
+            passes = (regime == "GREEN")
+        else:  # SELL
+            passes = (regime == "RED")
+        logger.debug(f"  Supertrend: regime={regime}, want={'GREEN' if direction=='BUY' else 'RED'} "
+                    f"— {'PASS' if passes else 'BLOCKED'}")
+        return passes, regime
+
     def on_tick(self, event: MarketEvent) -> None:
         """
         Called on every MarketEvent for this symbol.
@@ -117,6 +180,20 @@ class RSIMomentum(Strategy):
             direction = "SELL"
 
         if direction:
+            # v9.4 — Supertrend regime gate (third filter after RSI + ADX)
+            st_pass, regime = self._check_supertrend_filter(
+                direction, highs, lows, closes
+            )
+            if not st_pass:
+                logger.info(
+                    f"  ❌ FILTERED {direction} {self.symbol}: "
+                    f"Supertrend regime={regime}, expected "
+                    f"{'GREEN' if direction == 'BUY' else 'RED'} "
+                    f"(RSI {prev_rsi:.1f}→{current_rsi:.1f})"
+                )
+                self.prev_rsi = current_rsi
+                return
+
             self.signal_fired = True
             signal = SignalEvent(
                 symbol          = self.symbol,
@@ -128,7 +205,8 @@ class RSIMomentum(Strategy):
             self.engine.emit_event(signal)
             logger.info(f"  🚀 SIGNAL: {direction} {self.symbol} @ {event.ltp:.2f} "
                        f"[RSI {prev_rsi:.1f} → {current_rsi:.1f}, "
-                       f"crossed {'above 55' if direction == 'BUY' else 'below 45'}]")
+                       f"crossed {'above 55' if direction == 'BUY' else 'below 45'}, "
+                       f"Supertrend {regime}]")
 
         self.prev_rsi = current_rsi
 

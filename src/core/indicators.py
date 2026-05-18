@@ -1,8 +1,106 @@
 import logging
+import numpy as np
+import talib
 from collections import deque
 from datetime import datetime, time
 
 logger = logging.getLogger(__name__)
+
+
+# ── v9.4 — Supertrend indicator (function-style, talib-based) ─
+# Day 11 EOD finding: 0% win rate on 10-30 min entries; RSI fires
+# AFTER the move is already underway. Supertrend acts as a
+# regime filter — only allow BUYs when trend is GREEN (uptrend),
+# only allow SELLs when trend is RED (downtrend).
+#
+# Used by S2 (RSI Momentum). Function-style to match talib usage
+# pattern in rsi_momentum.py (talib.RSI(closes), talib.ADX(...)).
+#
+# Standard Indian intraday parameters: period=10, multiplier=3
+# (matches default in pandas-ta and the configurations used by
+# most NSE retail traders).
+
+def compute_supertrend(highs: np.ndarray, lows: np.ndarray,
+                       closes: np.ndarray,
+                       period: int = 10,
+                       multiplier: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute Supertrend indicator on OHLC arrays.
+
+    Returns:
+        supertrend: np.ndarray — the trend line value
+        direction:  np.ndarray — +1 for GREEN (uptrend), -1 for RED (downtrend)
+
+    Algorithm (standard):
+        1. ATR(period) of bars
+        2. hl2 = (high + low) / 2
+        3. upper_band = hl2 + multiplier × ATR
+        4. lower_band = hl2 - multiplier × ATR
+        5. Band-locking: keep band tight on each side of price
+        6. Trend flips when close crosses the active band
+
+    Returns NaN for the first `period` bars (insufficient data).
+    """
+    n = len(closes)
+    if n < period + 1:
+        # Not enough data
+        return np.full(n, np.nan), np.full(n, np.nan)
+
+    atr = talib.ATR(highs, lows, closes, timeperiod=period)
+    hl2 = (highs + lows) / 2.0
+
+    upper_basic = hl2 + multiplier * atr
+    lower_basic = hl2 - multiplier * atr
+
+    upper_band = np.full(n, np.nan)
+    lower_band = np.full(n, np.nan)
+    supertrend = np.full(n, np.nan)
+    direction  = np.full(n, np.nan)
+
+    # Initialise at first valid bar (where ATR is defined)
+    first_valid = period
+    upper_band[first_valid] = upper_basic[first_valid]
+    lower_band[first_valid] = lower_basic[first_valid]
+    supertrend[first_valid] = upper_band[first_valid]
+    direction[first_valid]  = -1  # neutral start, will flip on first cross
+
+    for i in range(first_valid + 1, n):
+        # Upper band: only updates downward (or holds) unless prev close was above it
+        if upper_basic[i] < upper_band[i-1] or closes[i-1] > upper_band[i-1]:
+            upper_band[i] = upper_basic[i]
+        else:
+            upper_band[i] = upper_band[i-1]
+
+        # Lower band: only updates upward (or holds) unless prev close was below it
+        if lower_basic[i] > lower_band[i-1] or closes[i-1] < lower_band[i-1]:
+            lower_band[i] = lower_basic[i]
+        else:
+            lower_band[i] = lower_band[i-1]
+
+        # Trend logic: previous supertrend determines which band is active
+        prev_st  = supertrend[i-1]
+        prev_dir = direction[i-1]
+
+        if prev_st == upper_band[i-1]:
+            # Was in downtrend (price below upper band)
+            if closes[i] > upper_band[i]:
+                # Close broke above → flip to uptrend
+                supertrend[i] = lower_band[i]
+                direction[i]  = 1
+            else:
+                supertrend[i] = upper_band[i]
+                direction[i]  = -1
+        else:
+            # Was in uptrend (price above lower band)
+            if closes[i] < lower_band[i]:
+                # Close broke below → flip to downtrend
+                supertrend[i] = upper_band[i]
+                direction[i]  = -1
+            else:
+                supertrend[i] = lower_band[i]
+                direction[i]  = 1
+
+    return supertrend, direction
 
 
 class VWAPCalculator:
