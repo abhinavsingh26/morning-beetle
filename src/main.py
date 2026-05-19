@@ -5,6 +5,8 @@ import json
 import logging
 import threading
 import time
+import time
+from datetime import datetime
 from datetime import datetime, time as dtime
 from dotenv import load_dotenv
 
@@ -511,9 +513,9 @@ def main():
             now = datetime.now().time()
 
             # Kill switch check — 15:15 (only during market hours)
-            if datetime.now().time() >= time(15, 15):
+            from datetime import time as _dtime
+            if datetime.now().time() >= _dtime(15, 15):
                 logger.info("⚡ 15:15 Kill switch — stopping engine.")
-                # v9.1 — synchronous kill before main loop exit
                 exits.force_kill_now()
                 exits.wait_for_all_closed(timeout=30)
                 break

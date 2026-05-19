@@ -1,31 +1,44 @@
 """
-RSIMomentum strategy (S2) — v9.4 with Supertrend regime filter.
+RSIMomentum strategy (S2) — v9.5 with CandleAggregator + Historical Seeding.
 
-v9.4 change (Day 11 EOD, May 18 2026):
-    Day 11 showed 0W/4L (−₹493) on this strategy alone. Analysis of Stage 5a
-    (28 trades) revealed:
-      - 10–30 min after open: 18 trades, 27.8% win rate, −₹700 total
-      - 30–60 min after open:  6 trades, 83.3% win rate, +₹1,062 total
-      - SL exits: 16/16 losses (0% win)
-      - TRAIL exits: 7/7 wins (100% win)
-    RSI(14)/ADX(14) crossover frequently fires AFTER the move has played out
-    on choppy/mean-reverting days, catching the reversal tail.
+v9.5 change (Day 12 EOD, May 19 2026)
+======================================
+Day 12 confirmed via TradingView comparison that the engine's Supertrend
+was seeing RED while TradingView showed GREEN — because the engine was
+treating every tick as a separate "candle" instead of aggregating ticks
+into proper 5-min OHLCV bars.
 
-    Fix: Supertrend(10, 3) regime filter as a third gate.
-      - BUY only fires when Supertrend is GREEN (uptrend in progress)
-      - SELL only fires when Supertrend is RED (downtrend in progress)
-    Expected effect: filters out ~50-60% of entries on choppy days,
-    preserves nearly all trending-day entries.
-    Trade count drops, per-trade win rate rises.
+Two fixes shipped together in v9.5:
+
+1. CandleAggregator (src/core/candle_aggregator.py):
+   - Bins streaming ticks into proper 5-min OHLCV candles aligned to
+     09:15, 09:20, 09:25, ... boundaries (matches TradingView).
+   - Strategy now consumes ONE completed candle per 5-min bin, not
+     one "candle" per tick.
+
+2. HistoricalSeeder (src/core/historical_seeder.py):
+   - Pre-loads last 30 5-min bars per symbol from Kite REST historical_data
+     at engine boot.
+   - Strategy's self.candles is already warm at 09:15, so RSI(14)/ADX(14)/
+     Supertrend(10) are meaningful from the very first live tick.
+   - Engine fully armed and ready to fire signals at 09:30 (Blueprint window
+     open), NOT at 10:25 as raw computation would require.
+
+v9.4 carry-forward
+-------------------
+Supertrend(10, 3) regime filter remains as the third gate after RSI+ADX.
+But now it's computed on REAL 5-min candles, not tick noise.
 """
 import logging
 import numpy as np
 import pandas as pd
 import talib
 from datetime import datetime, time
+from typing import Optional
 from src.strategies.base import Strategy
 from src.core.events import MarketEvent, SignalEvent
 from src.core.indicators import compute_supertrend
+from src.core.candle_aggregator import CandleAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +55,13 @@ SOFT_OPEN_GATE = time(9, 20)   # No RSI signals before 09:20 AM
 USE_SUPERTREND_FILTER = True
 SUPERTREND_PERIOD     = 10
 SUPERTREND_MULTIPLIER = 3.0
+
+# v9.5 — Minimum candles needed before any signal can fire
+# RSI(14) needs 14 prior + 1 current = 15
+# ADX(14) needs same
+# Supertrend(10) needs 10 prior + buffer
+# Use max + safety margin
+MIN_CANDLES_FOR_SIGNAL = RSI_PERIOD + ADX_PERIOD + 2  # = 30
 
 
 class RSIMomentum(Strategy):
@@ -63,25 +83,44 @@ class RSIMomentum(Strategy):
     sl_pct        = 0.008    # 0.8% stop loss per Blueprint v8
     target_pct    = 0.015    # 1.5% target per Blueprint v8
 
-    def __init__(self, engine, symbol: str, sentiment_score: float = 0.0):
+    def __init__(self, engine, symbol: str, sentiment_score: float = 0.0,
+                 seed_candles: Optional[list] = None):
+        """
+        Args:
+            engine          — TradingEngine instance
+            symbol          — ticker (e.g., "INFY")
+            sentiment_score — pre-market FinBERT score for this ticker
+            seed_candles    — optional list of OHLCV dicts to pre-populate
+                              candle history (warm-up data from yesterday).
+                              Allows strategy to fire signals from 09:30
+                              instead of waiting until ~10:25.
+        """
         super().__init__(engine, symbol, sentiment_score)
         self.strategy_name = "RSIMomentum"   # backward compat for SignalEvent
 
-        self.candles: list[dict] = []
+        # v9.5 — CandleAggregator replaces tick-as-candle pattern
+        self.aggregator = CandleAggregator(
+            symbol=symbol, interval_minutes=CANDLE_INTERVAL
+        )
+
+        # self.candles now stores ONLY completed 5-min OHLCV bars,
+        # including any historical seed bars.
+        self.candles: list[dict] = list(seed_candles) if seed_candles else []
+
         self.signal_fired = False
         self.prev_rsi     = None   # Track previous RSI for crossover detection
 
-        logger.info(f"RSIMomentum initialised for {symbol}")
-
-    def _build_candle(self, tick: MarketEvent) -> dict:
-        return {
-            "time":   tick.timestamp,
-            "open":   tick.open,
-            "high":   tick.high,
-            "low":    tick.low,
-            "close":  tick.ltp,
-            "volume": tick.volume
-        }
+        if seed_candles:
+            logger.info(
+                f"RSIMomentum initialised for {symbol} — "
+                f"seeded with {len(seed_candles)} historical candles "
+                f"(ready to fire at 09:30)"
+            )
+        else:
+            logger.info(
+                f"RSIMomentum initialised for {symbol} — "
+                f"NO historical seed (will arm ~10:25 via live ticks)"
+            )
 
     def _check_adx_filter(self, highs: np.ndarray,
                            lows: np.ndarray,
@@ -136,22 +175,52 @@ class RSIMomentum(Strategy):
     def on_tick(self, event: MarketEvent) -> None:
         """
         Called on every MarketEvent for this symbol.
-        Evaluates RSI crossover with ADX confirmation.
+
+        v9.5 behaviour:
+          1. Feed tick to CandleAggregator (always — even pre-09:20,
+             so 09:15-09:20 bin gets built correctly)
+          2. If a 5-min bin just closed → append completed candle to self.candles
+          3. Apply soft gate: don't evaluate signals before 09:20
+          4. Evaluate RSI/ADX/Supertrend on the new bar
+
+        Signal evaluation happens ~12 times per hour per symbol
+        (once per 5-min boundary cross), not on every tick.
         """
         if event.symbol != self.symbol:
             return
         if self.signal_fired:
             return
 
-        # Soft gate — no signals before 09:20
+        # v9.5 — Aggregate tick into 5-min candle.
+        # Run BEFORE soft gate so the 09:15-09:20 bin is built properly.
+        # Returns a completed candle ONLY when bin boundary is crossed,
+        # else returns None.
+        completed = self.aggregator.on_tick(event)
+        if completed is None:
+            return  # Still building current bin — no evaluation
+
+        # New 5-min candle just closed — append to history
+        self.candles.append(completed)
+        logger.debug(
+            f"  {self.symbol} new 5m candle @ {completed['time'].time()}: "
+            f"O={completed['open']:.2f} H={completed['high']:.2f} "
+            f"L={completed['low']:.2f} C={completed['close']:.2f} "
+            f"V={completed['volume']:.0f} "
+            f"(total candles={len(self.candles)})"
+        )
+
+        # Soft gate — no SIGNAL evaluation before 09:20.
+        # (Candle aggregation continues regardless, so RSI/Supertrend stay
+        # current and ready to fire the moment the soft gate opens.)
         if event.timestamp.time() < SOFT_OPEN_GATE:
             return
 
-        candle = self._build_candle(event)
-        self.candles.append(candle)
-
         # Need enough candles for RSI(14) + ADX(14)
-        if len(self.candles) < RSI_PERIOD + ADX_PERIOD + 2:
+        if len(self.candles) < MIN_CANDLES_FOR_SIGNAL:
+            logger.debug(
+                f"  {self.symbol} arming — {len(self.candles)}/"
+                f"{MIN_CANDLES_FOR_SIGNAL} candles ready"
+            )
             return
 
         df      = pd.DataFrame(self.candles)
@@ -211,10 +280,15 @@ class RSIMomentum(Strategy):
         self.prev_rsi = current_rsi
 
     def reset(self) -> None:
-        """Reset for new trading day."""
+        """Reset for new trading day. Clears candles and aggregator state.
+
+        Note: this clears ALL candles including any seed data. The next-day
+        boot sequence should re-seed via HistoricalSeeder.
+        """
         self.candles      = []
         self.signal_fired = False
         self.prev_rsi     = None
+        self.aggregator.reset()
 
 
 if __name__ == "__main__":
