@@ -33,6 +33,7 @@ from src.strategies.sector_pullback  import SectorLeaderPullback
 from src.strategies.vol_breakout     import VolatilityContractionBreakout
 from src.strategies.vol_spike        import VolumeSpikeWithSentiment
 from src.core.strategy_registry      import StrategyRegistry
+from src.core.historical_seeder import HistoricalSeeder
 
 # ── Intelligence imports ──────────────────────────────────────────────
 from src.beetle.instrument_master import load_instruments
@@ -396,16 +397,52 @@ def main():
     db.log_system("INFO", "ENGINE_START",
                   f"Symbols: {symbols} | Paper: {IS_PAPER_TRADING}")
 
+    # ── Step 3.5 (v9.5): Pre-load historical 5-min candles for warm-up ──
+    # Strategy needs 30+ candles for RSI(14)+ADX(14)+Supertrend(10) to
+    # become meaningful. Fetching last 30 bars from Kite REST means the
+    # engine is fully armed and ready to fire signals at 09:30 AM, not
+    # 10:25 AM (which would happen if we had to wait for 30 live 5-min
+    # bars after market open).
+    seed_by_symbol = {}
+    try:
+        seeder = HistoricalSeeder(kite_rest=kite_rest)
+        instrument_map_for_seed = {}
+        for symbol in symbols:
+            if symbol in instruments:
+                instrument_map_for_seed[symbol] = instruments[symbol]["instrument_token"]
+            else:
+                logger.warning(f"  Symbol {symbol} not in instruments — cannot seed")
+        seed_by_symbol = seeder.fetch_for_symbols(
+            instrument_map=instrument_map_for_seed,
+            num_candles=30,
+            interval_minutes=5,
+        )
+        seeded_count = sum(1 for v in seed_by_symbol.values() if v)
+        logger.info(f"  Historical seed complete: {seeded_count}/{len(symbols)} symbols armed")
+    except Exception as e:
+        logger.error(f"  Historical seeding failed entirely: {e}. "
+                     f"Strategies will arm via live ticks (slower).")
+        seed_by_symbol = {}
+
     # ── Step 4: Initialise strategies via StrategyRegistry ────────────
     registry = StrategyRegistry()
     for symbol in symbols:
         sentiment = sentiment_map.get(symbol, 0.0)
+        seed = seed_by_symbol.get(symbol, [])    # ← v9.5 NEW
         for strat_name in ENABLED_STRATEGIES:
             if strat_name not in STRATEGY_CLASSES:
                 logger.warning(f"  Unknown strategy in ENABLED_STRATEGIES: {strat_name}")
                 continue
             cls = STRATEGY_CLASSES[strat_name]
-            strategy = cls(engine, symbol, sentiment)
+            # v9.5: pass seed_candles only to strategies that accept it.
+            # RSIMomentum signature: (engine, symbol, sentiment_score, seed_candles=None)
+            # Older strategies that don't accept it: gracefully degrade
+            try:
+                strategy = cls(engine, symbol, sentiment, seed_candles=seed)
+            except TypeError:
+                # Strategy doesn't accept seed_candles param (e.g. S1 Breakout)
+                # → fall back to old-style instantiation
+                strategy = cls(engine, symbol, sentiment)
             registry.register(strategy)
 
         logger.info(f"  Strategies initialised for {symbol} "
