@@ -9,6 +9,7 @@ from src.beetle.news_fetcher import fetch_all_headlines
 from src.beetle.entity_shield import filter_headlines, DEAD_ZONE_MIN, DEAD_ZONE_MAX
 from src.beetle.finbert_scorer import score_headline
 from src.beetle.sector_heatmap import get_heatmap
+from src.beetle.liquidity_filter import LiquidityFilter
 
 load = __import__("dotenv").load_dotenv
 load("config/.env")
@@ -305,7 +306,7 @@ SECTOR_MAP = {
 
 }
 
-MAX_WATCHLIST       = 10   # Scan top 10 tickers
+MAX_WATCHLIST       = 15   # Scan top 10 tickers
 MAX_POSITIONS       = 3   # Take first 3 that cross all gates
 
 
@@ -357,12 +358,39 @@ def _apply_convergence_and_dedup(scored: list, heatmap: dict) -> list:
         })
 
     # Deduplicate by symbol — keep highest confidence
+    # Deduplicate by symbol — keep highest confidence
     deduped = {}
     for c in candidates:
         sym = c["symbol"]
         if sym not in deduped or c["confidence"] > deduped[sym]["confidence"]:
             deduped[sym] = c
-    return list(deduped.values())
+    deduped_list = list(deduped.values())
+
+    # v9.6.1 — Liquidity filter (5 lakh shares/day floor)
+    # Jun 1 SILINV disaster: microcap with 1-5 ticks/min lost Rs414.
+    # This stops thin stocks from reaching the watchlist regardless
+    # of how strong their sentiment is.
+    try:
+        instruments = load_instruments()
+        instrument_map = {
+            sym: instruments[sym]["instrument_token"]
+            for sym in (c["symbol"] for c in deduped_list)
+            if sym in instruments
+        }
+        from kiteconnect import KiteConnect
+        api_key = os.getenv("ZERODHA_API_KEY")
+        access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+        if api_key and access_token:
+            kite = KiteConnect(api_key=api_key)
+            kite.set_access_token(access_token)
+            liq = LiquidityFilter(kite_rest=kite)
+            deduped_list = liq.filter_candidates(deduped_list, instrument_map)
+        else:
+            logger.warning("  LiquidityFilter SKIPPED — no Kite credentials")
+    except Exception as e:
+        logger.error(f"  LiquidityFilter error: {e} — fail-open (keeping all)")
+
+    return deduped_list
 
 
 def run_pipeline(use_mock_heatmap: bool = False) -> list:
