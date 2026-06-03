@@ -83,11 +83,18 @@ class SignalBoy:
                  min_composite: float = DEFAULT_MIN_COMPOSITE,
                  dead_zone_min: float = -0.1,
                  dead_zone_max: float = 0.1,
-                 news_archiver: Optional[NewsArchiver] = None):
+                 news_archiver: Optional[NewsArchiver] = None,
+                 is_tradeable_fn: Optional[Callable] = None,
+                 liquidity_filter: Optional[object] = None):
         """
-        Args (unchanged from v0.3, plus):
-            history_dir:   directory for daily queue JSONL history (None=default)
-            news_archiver: optional NewsArchiver instance; if None, archiving off
+        Args (v0.5 additions):
+            history_dir:      directory for daily queue JSONL history (None=default)
+            news_archiver:    optional NewsArchiver instance; if None, archiving off
+            is_tradeable_fn:  callable symbol -> bool; drops -BE/-SM/-ST/etc.
+                              Pass src.beetle.intelligence.is_tradeable.
+                              If None, suffix filter is skipped (legacy behavior).
+            liquidity_filter: LiquidityFilter instance; drops thin stocks
+                              (avg vol < 500k/day). If None, filter is skipped.
         """
         if mode not in ("shadow", "production"):
             raise ValueError(f"mode must be 'shadow' or 'production', got {mode}")
@@ -103,6 +110,9 @@ class SignalBoy:
         self.min_composite           = min_composite
         self.dead_zone_min           = dead_zone_min
         self.dead_zone_max           = dead_zone_max
+        # v0.5 — parity filters
+        self.is_tradeable_fn         = is_tradeable_fn
+        self.liquidity_filter        = liquidity_filter
 
         # Queue path resolution
         if queue_path is None:
@@ -354,6 +364,54 @@ class SignalBoy:
                 deduped[sym] = c
         candidates = list(deduped.values())
         logger.info(f"  Passed sector gate (deduplicated): {len(candidates)}")
+
+        # ── Step 4b — v0.5 — Suffix exclusion (parity with intelligence.py) ──
+        # Drops -BE/-SM/-ST/-BZ/-IL/-IT (non-MIS-tradeable segments).
+        if self.is_tradeable_fn and candidates:
+            before = len(candidates)
+            kept = []
+            for c in candidates:
+                if self.is_tradeable_fn(c["symbol"]):
+                    kept.append(c)
+                else:
+                    key = c.get("_archive_key")
+                    if key in archive_records:
+                        archive_records[key]["passed_sector"] = False
+                    logger.info(f"    Suffix-dropped: {c['symbol']}")
+            candidates = kept
+            dropped = before - len(candidates)
+            if dropped:
+                logger.info(f"  Suffix filter: {before} → {len(candidates)} "
+                           f"({dropped} dropped)")
+
+        # ── Step 4c — v0.5 — Liquidity floor (parity with intelligence.py) ──
+        # Drops stocks below 5L shares/day average volume.
+        if self.liquidity_filter and candidates:
+            before = len(candidates)
+            instrument_map = {
+                c["symbol"]: c.get("instrument_token")
+                for c in candidates
+                if c.get("instrument_token")
+            }
+            try:
+                kept_symbols = {
+                    c["symbol"]
+                    for c in self.liquidity_filter.filter_candidates(
+                        candidates, instrument_map
+                    )
+                }
+                for c in candidates:
+                    if c["symbol"] not in kept_symbols:
+                        key = c.get("_archive_key")
+                        if key in archive_records:
+                            archive_records[key]["passed_sector"] = False
+                candidates = [c for c in candidates if c["symbol"] in kept_symbols]
+                dropped = before - len(candidates)
+                if dropped:
+                    logger.info(f"  LiquidityFilter: {before} → {len(candidates)} "
+                               f"({dropped} dropped as thin)")
+            except Exception as e:
+                logger.warning(f"  LiquidityFilter error: {e} — fail-open")
 
         # ── Step 5: Ranker ──
         ranked = rank_signals(
