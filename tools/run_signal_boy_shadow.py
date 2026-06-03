@@ -108,7 +108,8 @@ def main():
     from src.beetle.entity_shield     import filter_headlines
     from src.beetle.finbert_scorer    import score_headline
     from src.beetle.sector_heatmap    import get_heatmap
-    from src.beetle.intelligence      import get_sector
+    from src.beetle.intelligence      import get_sector, is_tradeable
+    from src.beetle.liquidity_filter  import LiquidityFilter
     from src.beetle.signal_boy.signal_boy import SignalBoy
     from src.beetle.signal_boy.news_archiver import NewsArchiver
 
@@ -143,6 +144,23 @@ def main():
         enabled=True,
     )
 
+    # ── v0.5 — LiquidityFilter (parity with live engine) ──
+    logger.info("  → Initialising LiquidityFilter...")
+    from kiteconnect import KiteConnect
+    api_key      = os.getenv("ZERODHA_API_KEY")
+    access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+    liquidity_filter = None
+    if api_key and access_token:
+        kite_rest = KiteConnect(api_key=api_key)
+        kite_rest.set_access_token(access_token)
+        liquidity_filter = LiquidityFilter(
+            kite_rest=kite_rest,
+            cache_path="cache/liquidity_cache.json",
+        )
+        logger.info("    LiquidityFilter ready (5L shares/day floor)")
+    else:
+        logger.warning("    Kite credentials missing — LiquidityFilter DISABLED")
+
     logger.info("  → Constructing SignalBoy (shadow mode)...")
     sb = SignalBoy(
         source_fetchers          = source_fetchers,
@@ -157,6 +175,8 @@ def main():
         queue_path               = "signals/queue_shadow.json",
         history_dir              = "signals/history_shadow",
         news_archiver            = news_archiver,
+        is_tradeable_fn          = is_tradeable,
+        liquidity_filter         = liquidity_filter,
     )
 
     # Graceful shutdown
