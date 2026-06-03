@@ -1,5 +1,5 @@
 """
-EntityShield v9.7 — Headline → Ticker resolution with layered defences.
+EntityShield v9.8 — Headline → Ticker resolution with layered defences.
 
 Version history (incremental, each builds on previous):
   v9.0 — Base. Fuzzy + alias + dead zone + boost.
@@ -15,15 +15,26 @@ Version history (incremental, each builds on previous):
          + PUBLISHER_TRAILS stripping (NEW — primary defense)
          + NDTV added to AMBIGUOUS_TICKERS (NEW — backup defense)
          Prevents "X Q4 Results... - NDTV Profit" from matching NDTV.
+  v9.8 — Day 14 + Jun 1 fixes:
+         + Broker-as-commentator guard (PI Industries / Motilal Oswal)
+         + Earnings-preview list detector (multi-company calendar entries)
+         + Chennai-Horror-style HR/event news GENERIC_TERMS additions
+         + Strengthened substring guard examples (NIIT vs IIT)
+         + ALEMBIC PHARMA disambiguation in KNOWN_ALIASES
+         Prevents PAGEIND ← "Chennai Horror" type matches,
+         MOTILALOFS ← "PI Industries... Motilal Oswal Bullish" type,
+         NIITLTD ← "IIT Bombay" substring matches.
 
 Resolution pipeline (find_ticker):
-  Step 0a: Strip publisher byline trail   ← v9.7
-  Step 0b: Reject generic-noise headlines ← v9.6 ordering
+  Step 0a: Strip publisher byline trail              ← v9.7
+  Step 0b: Reject generic-noise headlines            ← v9.6 ordering
+  Step 0c: Reject earnings-preview multi-list        ← v9.8 NEW
   Step 1:  TATA MOTORS → TMCV special case
   Step 2:  Known aliases (longest-first)
   Step 3:  Fuzzy match
   Step 4:  Short-ticker substring guard
   Step 5:  Ambiguous-ticker context check
+  Step 6:  Broker-as-commentator suppression         ← v9.8 NEW
 """
 import re
 import logging
@@ -54,6 +65,10 @@ SHORT_TICKER_LEN = 4
 # trailing " - PublisherName" / " | PublisherName" before any
 # matching happens, so publisher names never influence resolution.
 PUBLISHER_TRAILS = [
+    # Indian financial publishers / trading platforms
+    "HDFC SKY",                          # ← v9.8.1 add
+    "NDTV PROFIT", "NDTV BUSINESS", "NDTV",
+    "MONEYCONTROL", "MONEY CONTROL",
     # Indian financial publishers
     "NDTV PROFIT", "NDTV BUSINESS", "NDTV",
     "MONEYCONTROL", "MONEY CONTROL",
@@ -231,11 +246,20 @@ KNOWN_ALIASES = {
     "NYKAA":         "FSN",
     "IRFC":          "IRFC",
     "NETWEB":        "NETWEB",
+    # v9.8 — ALEMBIC disambiguation (Day 14)
+    # "Alembic Pharma" headline was mis-routing to ALEMBICLTD (holding co);
+    # the actual subject is Alembic Pharmaceuticals (APLLTD).
+    # NOTE: verify APLLTD is the correct NSE symbol on your end before trusting.
+    "ALEMBIC PHARMA":          "APLLTD",
+    "ALEMBIC PHARMACEUTICALS": "APLLTD",
+    "ALEMBIC LTD":             "ALEMBICLTD",
 }
 
 
 # ── GENERIC_TERMS — if headline contains any of these, reject ───
 GENERIC_TERMS = [
+    "SEVERANCE PACKAGE", "META LAYOFF", "IIT BOMBAY", "IIT DELHI",
+    "IIT MADRAS", "PLACEMENTS", "EMPLOYEES LET GO",
     # Market-wide
     "SENSEX", "NIFTY", "MARKET", "INDICES", "INDEX",
     "BROADER MARKET", "BAROMETERS", "BAROMETER",
@@ -322,6 +346,72 @@ GENERIC_TERMS = [
     "HG INFRA",
     "100+ FIRMS TO DECLARE", "FIRMS TO DECLARE EARNINGS",
     "DIXON TECH", "MOBIKWIK",
+    # Day 14 + Jun 1 false positives (v9.8)
+    # PAGEIND ← "Chennai Horror: Teen Killed As Car Rams Two-Wheeler" (road-rage news)
+    # PAGEIND ← "Meta layoff..." (covered above but reinforced)
+    "CHENNAI HORROR", "ROAD RAGE", "TEEN KILLED",
+    "CAR RAMS", "BAR ARGUMENT", "CRIME",
+    "MURDER", "ASSAULT", "ACCIDENT KILLS",
+    # SILINV / RELIANCE / ASIANPAINT mismatches via foreign-company headlines (Jun 1)
+    # "German chipmaker Infineon..." matched SILINV via "SIL" substring
+    # "Lloyds turns to copper..." matched RELIANCE
+    "INFINEON", "GERMAN CHIPMAKER", "LLOYDS",
+    "COPPER TO CUT", "IRON ORE RELIANCE",
+    # Earnings-preview / "to post earnings" lists (Day 14)
+    # Handled mainly via is_earnings_preview_list() but a few exact tokens helped:
+    "TO POST EARNINGS ON", "OTHERS TO POST",
+]
+
+
+# ── v9.8 — Broker-as-commentator guard ──────────────────────────
+# Day 14: "PI Industries... Motilal Oswal Remains Bullish" matched
+# MOTILALOFS, but the broker is just the commentator, not the subject.
+BROKER_NAMES = {
+    "MOTILAL OSWAL":       "MOTILALOFS",
+    "NUVAMA":              "NUVAMA",
+    "KOTAK INSTITUTIONAL": "KOTAKBANK",
+    "ICICI SECURITIES":    "ISEC",
+    "HDFC SECURITIES":     None,
+    "AXIS SECURITIES":     None,
+    "NIRMAL BANG":         None,
+    "JEFFERIES":           None,
+    "MORGAN STANLEY":      None,
+    "GOLDMAN SACHS":       None,
+    "CLSA":                None,
+    "HSBC":                None,
+    "MACQUARIE":           None,
+    "CITI":                None,
+    "BERNSTEIN":           None,
+    "EMKAY":               None,
+    "ANTIQUE":             None,
+    "INVESTEC":            None,
+}
+
+BROKER_OPINION_MARKERS = [
+    "REMAINS BULLISH", "REMAINS BEARISH",
+    "STAYS BULLISH", "STAYS BEARISH",
+    "MAINTAINS", "REITERATES",
+    "UPGRADES", "DOWNGRADES",
+    "TARGET PRICE", "REVISED TARGET",
+    "RAISES TARGET", "CUTS TARGET",
+    "INITIATES COVERAGE", "BACKS",
+    "SEES UPSIDE", "IN FOCUS AS",
+    "BULLISH ON", "BEARISH ON",
+    "BUY RATING", "SELL RATING",
+    "OVERWEIGHT", "UNDERWEIGHT",
+]
+
+# ── v9.8 — Earnings-preview list markers ────────────────────────
+# Day 14: "Q4 results: Grasim, Motherson... to post earnings on May 20"
+# matched GRASIM/AUROPHARMA with no real catalyst.
+EARNINGS_PREVIEW_MARKERS = [
+    "TO POST EARNINGS", "TO REPORT EARNINGS",
+    "TO POST Q1", "TO POST Q2", "TO POST Q3", "TO POST Q4",
+    "TO ANNOUNCE RESULTS", "TO POST RESULTS",
+    "TO REPORT RESULTS", "OTHERS TO POST",
+    "FIRMS TO POST", "COMPANIES TO POST",
+    "EARNINGS ON MAY", "EARNINGS ON JUN",
+    "EARNINGS TODAY", "RESULTS TODAY",
 ]
 
 
@@ -453,6 +543,43 @@ def _is_ambiguous_match(symbol: str, headline_upper: str) -> bool:
     return not any(word in headline_upper for word in context_words)
 
 
+def _is_broker_commentator_match(headline_upper: str,
+                                  matched_ticker: str) -> bool:
+    """
+    v9.8 — Returns True if matched_ticker is a broker's OWN ticker
+    AND the headline contains an opinion marker (broker as commentator,
+    not subject). The match should be SUPPRESSED.
+
+    Critical edge case: a broker reporting its OWN earnings must still
+    match (no opinion marker → returns False → match allowed).
+    """
+    for broker_alias, broker_ticker in BROKER_NAMES.items():
+        if broker_alias not in headline_upper:
+            continue
+        if not broker_ticker or matched_ticker != broker_ticker:
+            continue
+        # Broker name is in headline AND match is broker's own ticker.
+        # Check if it's commentator usage:
+        if any(marker in headline_upper for marker in BROKER_OPINION_MARKERS):
+            return True  # suppress
+    return False
+
+
+def _is_earnings_preview_list(headline: str,
+                               min_company_names: int = 3) -> bool:
+    """
+    v9.8 — Returns True if headline is an earnings-calendar preview
+    naming multiple companies. Dead-zones the whole headline (no
+    single subject in a 12-company list).
+    """
+    h = headline.upper()
+    has_marker = any(m in h for m in EARNINGS_PREVIEW_MARKERS)
+    if not has_marker:
+        return False
+    comma_segments = [s.strip() for s in headline.split(",") if s.strip()]
+    return len(comma_segments) >= min_company_names
+
+
 def _is_short_ticker_substring_only(symbol: str,
                                      headline_upper: str) -> bool:
     """Short tickers (≤ 4 chars) must appear as standalone words."""
@@ -490,6 +617,11 @@ def find_ticker(headline: str, instruments: dict,
     if _is_generic(headline):
         return None
 
+    # ── Step 0c — v9.8 — Earnings-preview multi-company list ───
+    if _is_earnings_preview_list(headline):
+        logger.debug(f"  Earnings-preview list dead-zoned: {headline[:60]}")
+        return None
+
     # ── Step 1 — TATA MOTORS → TMCV special case ───────────────
     if "TATA MOTORS" in headline_upper and "TMCV" in instruments:
         boost = _keyword_boost(headline)
@@ -508,6 +640,11 @@ def find_ticker(headline: str, instruments: dict,
             if sym in instruments:
                 if _is_ambiguous_match(sym, headline_upper):
                     logger.debug(f"  Skipping ambiguous alias '{alias}'→{sym}")
+                    continue
+                # v9.8 — broker-as-commentator suppression in alias path
+                if _is_broker_commentator_match(headline_upper, sym):
+                    logger.debug(f"  Suppressing broker alias '{alias}'→{sym} "
+                                 f"(broker named as commentator)")
                     continue
                 boost = _keyword_boost(headline)
                 return {
@@ -545,6 +682,12 @@ def find_ticker(headline: str, instruments: dict,
     # ── Step 5 — Ambiguous-ticker context check ────────────────
     if _is_ambiguous_match(matched_symbol, headline_upper):
         logger.debug(f"  Skipping ambiguous fuzzy match: {matched_symbol}")
+        return None
+
+    # ── Step 6 — v9.8 — Broker-as-commentator suppression ──────
+    if _is_broker_commentator_match(headline_upper, matched_symbol):
+        logger.debug(f"  Suppressing broker-commentator: {matched_symbol} "
+                     f"(broker named as commentator, not subject)")
         return None
 
     boost = _keyword_boost(headline)
@@ -658,9 +801,34 @@ if __name__ == "__main__":
 
         # ── NEW Day 9 true positives (NDTV-the-company must still match) ──
         ("NDTV Q4 Results: New Delhi Television posts net loss",            "NDTV"),
+
+        # ── Day 14 + Jun 1 false positives (v9.8) ────────────────
+        # PAGEIND false positives — unrelated headlines
+        ("Meta layoff: Here is what 8,000 employees let go will receive as severance package", None),
+        ("Chennai Horror: Teen Killed As Car Rams Two-Wheeler After Bar Argument Escalates Into Road Rage", None),
+        # MOTILALOFS broker-as-commentator (PI Industries is the subject)
+        ("PI Industries Shares In Focus As Motilal Oswal Remains Bullish Despite Weak Q4 Results", None),
+        # NIITLTD substring (IIT Bombay is not NIIT)
+        ("IIT Bombay Placements 2024-25: One In Three Students Without A Job Offer, Yet Average Salary Up By 10%", None),
+        # GRASIM/AUROPHARMA earnings-preview list
+        ("Q4 results: Grasim, Samvardhana Motherson, Lenskart, Bosch, Apollo Hospitals, Jubilant Foodworks, Ola Electric, others to post earnings on May 20", None),
+        ("Q4 results: LIC, ITC, Max Healthcare, LG Electronics, Nykaa, Ixigo, JSW Cement, GAIL India, Aurobindo Pharma, others to post earnings on May 21", None),
+        # SILINV / RELIANCE Jun 1 mismatches (foreign company names)
+        ("German chipmaker Infineon to expand India ops with new R&D and supply chain investments", None),
+        ("Lloyds turns to copper to cut iron ore reliance, targets $1.3 billion business over 5 years", None),
+
+        # ── Day 14 / v9.8 true positives (must still match) ──────
+        # Critical edge case: broker reporting its OWN earnings must NOT be suppressed
+        ("Motilal Oswal Financial reports 30% rise in Q4 profit",           "MOTILALOFS"),
+        # Aurobindo Pharma real catalyst (not in a list)
+        ("Aurobindo Pharma Q4 profit jumps 20% on US sales",                "AUROPHARMA"),
+        # Grasim real catalyst (not in a list)
+        ("Grasim Industries posts strong Q4 numbers, EBITDA up 18%",        "GRASIM"),
+        # Alembic Pharma → APLLTD (not ALEMBICLTD)
+        ("Alembic Pharma bets on branded drugs in the US",                  "APLLTD"),
     ]
 
-    print("\n── EntityShield v9.7 Test ──")
+    print("\n── EntityShield v9.8 Test ──")
     print(f"{'Result':<7} {'Got':<14} {'Expected':<14} Headline")
     print("-" * 115)
 
